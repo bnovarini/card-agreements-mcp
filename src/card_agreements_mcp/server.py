@@ -110,6 +110,21 @@ def _issuer_names() -> set:
     return {r["issuer"] for r in run("SELECT issuer FROM issuers")}
 
 
+def _fuzzy_names(name: str) -> list[str]:
+    """Typo-tolerant fallback: every query word must match some word of the issuer name
+    (substring, or similarity of at least 0.8 with difflib), e.g. 'harvard fedetal' -> HARVARD FEDERAL CREDIT UNION."""
+    import difflib, re as _re
+    qw = [w for w in _re.split(r"[^A-Z0-9]+", name.upper()) if len(w) > 1]
+    if not qw:
+        return []
+    out = []
+    for n in _issuer_names():
+        nw = [w for w in _re.split(r"[^A-Z0-9]+", n.upper()) if w]
+        if all(any(q in w or difflib.SequenceMatcher(None, q, w).ratio() >= 0.8 for w in nw) for q in qw):
+            out.append(n)
+    return sorted(out)
+
+
 def _resolve_issuer(name: str) -> list[str]:
     names = _issuer_names()
     if name in names:
@@ -118,7 +133,8 @@ def _resolve_issuer(name: str) -> list[str]:
     exact = [n for n in names if n.upper() == u]
     if exact:
         return exact
-    return sorted(n for n in names if u in n.upper())
+    sub = sorted(n for n in names if u in n.upper())
+    return sub or _fuzzy_names(name)
 
 
 def _issuer_or_error(name: str) -> str:
@@ -147,8 +163,13 @@ def search_issuers(name_contains: Optional[str] = None, issuer_type: Optional[st
     q = _q(quarter)
     limit, offset = _page(limit, offset)
     w, p = ["a.quarter = ?"], [q]
+    fuzzy = None
     if name_contains:
-        w.append("UPPER(i.issuer) LIKE ?"); p.append(_like(name_contains))
+        if any(name_contains.strip().upper().replace("%", "").replace("_", " ") in n.upper() for n in _issuer_names()):
+            w.append("UPPER(i.issuer) LIKE ?"); p.append(_like(name_contains))
+        else:
+            fuzzy = _fuzzy_names(name_contains)
+            w.append("i.issuer IN (%s)" % ",".join("?" * len(fuzzy)) if fuzzy else "0"); p.extend(fuzzy)
     if issuer_type:
         if issuer_type not in ("credit_union", "bank", "other"):
             raise ValueError("issuer_type must be credit_union, bank or other")
@@ -157,7 +178,10 @@ def search_issuers(name_contains: Optional[str] = None, issuer_type: Optional[st
         w.append("UPPER(i.state) = ?"); p.append(state.strip().upper())
     rows = run(f"""SELECT i.issuer, i.issuer_type, i.state, i.city, i.slug AS cfpb_slug, count(*) AS agreements_in_quarter, i.first_quarter, i.last_quarter, i.quarters AS quarters_present
         FROM issuers i JOIN agreements a ON a.issuer = i.issuer WHERE {' AND '.join(w)} GROUP BY i.issuer ORDER BY i.issuer LIMIT {limit + 1} OFFSET {offset}""", p)
-    return {"quarter": q, **_wrap(rows, limit, offset, "issuers")}
+    res = {"quarter": q, **_wrap(rows, limit, offset, "issuers")}
+    if fuzzy:
+        res["note"] = f"No issuer name contains '{name_contains}'; showing typo-tolerant (fuzzy) matches."
+    return res
 
 
 @mcp.tool(description="List the agreement files an issuer submitted in a quarter (default: latest): file name, agreement id, pages, description (older quarters), whether the PDF has a text layer, and a doc_id for get_agreement_text.")
