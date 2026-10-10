@@ -9,11 +9,11 @@ import re
 WORDNUM = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
            "twelve": 12, "fifteen": 15, "eighteen": 18, "twenty-four": 24}
 NUM = r"(\d+|" + "|".join(WORDNUM) + r")(?:\s*\(\d+\))?"
-PER = r"(billing\s+cycles?|statement\s+cycles?|months?)"
-INTRO1 = re.compile(r"(\d{1,2}(?:\.\d+)?)\s?%\s*(?:intro\w*|promo\w*)\s*(?:apr|rate)?[^%]{0,70}?\bfor\s+(?:the\s+|your\s+)?(?:first\s+)?" + NUM + r"\s+" + PER, re.I)
-INTRO2 = re.compile(r"(?:intro\w*|promo\w*)\s+(?:apr|rate)[^%]{0,40}?(\d{1,2}(?:\.\d+)?)\s?%[^%]{0,60}?\bfor\s+(?:the\s+|your\s+)?(?:first\s+)?" + NUM + r"\s+" + PER, re.I)
-INTRO3 = re.compile(r"(\d{1,2}(?:\.\d+)?)\s?%\s*(?:apr\s+)?for\s+(?:the\s+|your\s+)?(?:first\s+)?" + NUM + r"\s+" + PER, re.I)
-INTRO_WORD = re.compile(r"\b(intro\w*|promotional|promo)\b", re.I)
+PER = r"(billing\s+cycles?|statement\s+cycles?|statement\s+closing\s+dates?|months?)"
+INTRO1 = re.compile(r"(\d{1,2}(?:\.\d+)?)\s?%\s*(?:intro\w*|promo\w*)\s*(?:apr|rate)?[^%]{0,70}?\bfor\s+(?:the\s+|your\s+|a\s+period\s+of\s+|a\s+)?(?:first\s+)?" + NUM + r"\s+" + PER, re.I)
+INTRO2 = re.compile(r"(?:intro\w*|promo\w*)\s+(?:apr|rate)[^%]{0,40}?(\d{1,2}(?:\.\d+)?)\s?%[^%]{0,60}?\bfor\s+(?:the\s+|your\s+|a\s+period\s+of\s+|a\s+)?(?:first\s+)?" + NUM + r"\s+" + PER, re.I)
+INTRO3 = re.compile(r"(\d{1,2}(?:\.\d+)?)\s?%\s*(?:apr\s+)?for\s+(?:the\s+|your\s+|a\s+period\s+of\s+|a\s+)?(?:first\s+)?" + NUM + r"\s+" + PER, re.I)
+INTRO_WORD = re.compile(r"(?<!non-)(?<!non )\b(?:intro\w*|promotional|promo)\s+(?:apr|rate|annual|period|purchase\s+apr|interest)\b|\d\s?%\s*(?:intro\w*|promotional|promo)\b", re.I)
 MARGIN = [
     re.compile(r"prime(?:\s+rate)?\s*(?:\([^)]{0,30}\))?\s*(?:plus|\+)\s*(?:a\s+margin\s+of\s+)?(\d{1,2}(?:\.\d+)?)\s?%(?:\s*(?:to|-|\u2013|or)\s*(\d{1,2}(?:\.\d+)?)\s?%)?", re.I),
     re.compile(r"add(?:ing)?\s+(?:a\s+margin\s+of\s+)?((?:\d{1,2}(?:\.\d+)?\s?%(?:\s*(?:,|or|and|to|-|\u2013)\s*)?)+)\s+to\s+(?:the\s+)?(?:wsj\s+|wall\s+street\s+journal\s+)?prime", re.I),
