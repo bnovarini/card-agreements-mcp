@@ -1,7 +1,7 @@
 import re, json, sqlite3, sys
 T={
  'annual_fee': r'annual\s+fees?\b',
- 'purchase_apr': r'(annual percentage rate\s*\(apr\)\s*for\s*purchases|apr\s+for\s+purchases|purchase\s+(apr|rate)|apr\s*for\s*purchase)',
+ 'purchase_apr': r'(annual\s+percentage\s+rate\s*\(?apr\)?\s*(for|on)\s*purchases?|\(?apr\)?\s+(for|on)\s+purchases?|purchases?\s*\(?apr\)?|purchase\s+(apr|rate)|apr\s*for\s*purchase)',
  'cash_advance_apr': r'(cash\s+advance\s+apr|apr\s+for\s+cash\s+advances?)',
  'balance_transfer_apr': r'(apr\s+for\s+balance\s+transfers?|balance\s+transfer\s+apr)',
  'penalty_apr': r'penalty\s+apr',
@@ -25,7 +25,10 @@ def extract(text):
             if len(l)>400: continue
             for k,rx in RX.items():
                 if rx.match(l):
-                    snip=' '.join(' '.join(lines[i:i+4]).split())[:360]
+                    if k=='purchase_apr':
+                        snip=' '.join(' '.join(lines[max(i-1,0):i+14]).split())[:700]
+                    else:
+                        snip=' '.join(' '.join(lines[i:i+4]).split())[:360]
                     if not (AMT.search(snip) or PCT.search(snip) or re.search(r'\bnone\b|\bno\b|\bnot\b|waive|days',snip,re.I)): continue
                     out.append((k,pi,snip,json.dumps(AMT.findall(snip)[:6]),json.dumps(PCT.findall(snip)[:6]),int(bool(re.search(r'\bnone\b|\bno\s+(annual|fee|foreign)',snip[:120],re.I)))))
     # keep up to 3 per term per doc
