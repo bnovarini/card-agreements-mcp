@@ -152,3 +152,13 @@ def test_vertical_label_table_shared_value_cell():
          "       Transfers         19.65%.\n       Cash\n       Advances\n")
     ks = {x[0] for x in T.extract(t)}
     assert {"purchase_apr", "balance_transfer_apr", "cash_advance_apr"} <= ks
+
+
+def test_value_inside_label_and_spanish_purchases():
+    t1 = "Rates and Interest Charges Annual Percentage Rate (APR) for 31.90% Nordstrom Purchases This APR will vary with the market based on the Prime Rate.\n"
+    assert [x for x in T.extract(t1) if x[0] == "purchase_apr"]
+    # a Spanish margin sentence must not be read as a stated APR
+    t2 = "Margen sumado a la Tasa Preferencial de EE.UU. a fin de determinar su Tasa APR para compras y 9.24% transferencias de saldo.\n"
+    assert not [x for x in T.extract(t2) if x[0] == "purchase_apr"]
+    t3 = "Annual Percentage Rate (APR) for 15.90% purchase balance is not paid in full by its payment due date, Interest Charges will be imposed.\n"
+    assert not [x for x in T.extract(t3) if x[0] == "purchase_apr"]
