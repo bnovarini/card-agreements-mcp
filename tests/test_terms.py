@@ -159,6 +159,16 @@ def test_value_inside_label_and_spanish_purchases():
     assert [x for x in T.extract(t1) if x[0] == "purchase_apr"]
     # a Spanish margin sentence must not be read as a stated APR
     t2 = "Margen sumado a la Tasa Preferencial de EE.UU. a fin de determinar su Tasa APR para compras y 9.24% transferencias de saldo.\n"
-    assert not [x for x in T.extract(t2) if x[0] == "purchase_apr"]
+    assert not [x for x in T.extract(t2) if x[0] == "purchase_apr" and x[15] != "margin"]
     t3 = "Annual Percentage Rate (APR) for 15.90% purchase balance is not paid in full by its payment due date, Interest Charges will be imposed.\n"
     assert not [x for x in T.extract(t3) if x[0] == "purchase_apr"]
+
+
+def test_spanish_margin_stored_as_margin_not_apr():
+    t = ("Margen sumado a la Tasa Preferencial de EE.UU. a fin de determinar su Tasa APR para compras y        11.74% -\n"
+         "                transferencias de saldo. La Tasa APR m\u00e1xima es del 29.99%.                       21.74%\n\n"
+         "Margen sumado a la Tasa Preferencial de EE.UU. a fin de determinar su Tasa APR para adelantos en         22.74%\n"
+         "   efectivo y adelantos de protecci\u00f3n contra sobregiros. La Tasa APR m\u00e1xima es del 29.99%.\n")
+    rows = {x[0]: x for x in T.extract(t)}
+    assert rows["purchase_apr"][15] == "margin" and rows["purchase_apr"][13] == 11.74 and rows["purchase_apr"][14] == 21.74
+    assert rows["cash_advance_apr"][13] == 22.74 and rows["cash_advance_apr"][14] == 22.74
