@@ -1,3 +1,4 @@
+import json
 from card_agreements_mcp import terms as T
 
 TABLE = """ Interest Rates and Interest Charges
@@ -172,3 +173,18 @@ def test_spanish_margin_stored_as_margin_not_apr():
     rows = {x[0]: x for x in T.extract(t)}
     assert rows["purchase_apr"][15] == "margin" and rows["purchase_apr"][13] == 11.74 and rows["purchase_apr"][14] == 21.74
     assert rows["cash_advance_apr"][13] == 22.74 and rows["cash_advance_apr"][14] == 22.74
+
+
+def test_margin_table_pnc_layout():
+    t = (" Feature                         Margin                          Daily Periodic Rate of           Corresponding APR\n"
+         "                                                                 Interest\n"
+         " Purchases and Balance         Ranging from 10.74% to            Ranging from 0.05271% to         Ranging from 19.24% to\n"
+         " Transfers                     21.74%                            0.08284% (V)                     30.24% (V)\n"
+         " Cash Advances                 21.74%                            0.08284% (V)                     30.24% (V)\n"
+         " Penalty APR                   25.74%                            0.09380% (V)                     34.24% (V)\n"
+         "Minimum Interest Charge: $1.50\n")
+    rows = {x[0]: x for x in T.extract(t)}
+    p = rows["purchase_apr"]
+    assert json.loads(p[4]) == ["19.24%", "30.24%"] and (p[13], p[14]) == (10.74, 21.74) and p[15] == "stated"
+    assert "balance_transfer_apr" in rows
+    assert json.loads(rows["cash_advance_apr"][4]) == ["30.24%"] and rows["cash_advance_apr"][13] == 21.74
