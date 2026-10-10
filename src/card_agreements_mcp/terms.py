@@ -23,6 +23,7 @@ SPLIT_C_NEXT = re.compile(r'^\s*purchases?(\s|$)', re.I)
 SPLIT_B_NEXT = re.compile(r'^\s*for\s+purchases?\b', re.I)
 # sentence and table forms of the purchase APR (found by mining agreements without a hit)
 PURCH_EXTRA = [re.compile(x, re.I) for x in (
+    r'\(apr\)\s+for\s+\d{1,2}(\.\d+)?\s?%\s+(?:[A-Za-z\-]+\s+){0,3}purchases\b',
     r'\bannual\s+percentage\s+rates?\s*(\(apr\)\s*)?(for|on)\s+purchases?\s+(this|these|prime|\d)',
     r'\bannual\s+percentage\s+rate\s*\(apr\)\s+pu\s+\d{1,2}(\.\d+)?\s?%',
     r'\(apr\)\s*for\s+(?:[A-Za-z0-9\u00ae\u2122&\-/\.]+\s+){1,6}purchases?\s+\d{1,2}(\.\d+)?\s?%',
