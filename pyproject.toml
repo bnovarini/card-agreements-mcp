@@ -1,0 +1,15 @@
+[project]
+name = "card-agreements-mcp"
+version = "0.1.0"
+description = "MCP server for the CFPB credit card agreements database: every quarterly archive, full text, issuer metadata and key terms."
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+dependencies = ["mcp>=1.2,<2", "uvicorn"]
+[project.scripts]
+card-agreements-mcp = "card_agreements_mcp.server:main"
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+[tool.setuptools.packages.find]
+where = ["src"]
