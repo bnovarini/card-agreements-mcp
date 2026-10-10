@@ -82,6 +82,36 @@ EMPTY = (None, 'agreement', None, None, None, None, None, None, None, None)
 REGULAR_APR = re.compile(r'\bregular\s+apr\s+(ranges\s+from|is)\s+\d', re.I)
 
 
+SPANISH_MARGIN = re.compile(r'Margen\s+sumado\s+a\s+la\s+Tasa\s+(Preferencial|[\u00cdI]ndice)', re.I)
+
+
+def _spanish_margin_rows(pg, pi):
+    """Spanish agreements state 'Margen sumado a la Tasa Preferencial ... Tasa APR para compras ... 11.74% - 21.74%'.
+    The figure is a margin over the index, not an APR, so it is stored as margin only (basis='margin')."""
+    flat = ' '.join(pg.split())
+    rows = []
+    for m in SPANISH_MARGIN.finditer(flat):
+        win = flat[m.start():m.start() + 330]
+        win = re.sub(r'm[a\u00e1]xima\s+es\s+del\s+\d{1,2}(?:\.\d+)?\s?%', ' ', win, flags=re.I)  # the cap is not a margin
+        head = win[:200].lower()
+        kw = re.search(r'compras|adelantos', head)  # first product word after the label decides the term
+        if not kw: continue
+        if kw.group(0) == 'adelantos': terms = ('cash_advance_apr',)
+        else:
+            tr = re.search(r'transferencias', head)
+            terms = ('purchase_apr', 'balance_transfer_apr') if tr and tr.start() < kw.end() + 12 else ('purchase_apr',)
+        allp = list(re.finditer(r'(\d{1,2}\.\d{1,2})\s?%', win))
+        if not allp: continue
+        pcts = [float(allp[0].group(1))]
+        # a second figure is the other end of a margin range only when the first is followed by '-' or 'a' ("11.74% -", "6.74% a 21.74%")
+        if len(allp) > 1 and re.match(r'\s*(?:-|\u2013|a)\s', win[allp[0].end():allp[0].end() + 6]):
+            pcts.append(float(allp[1].group(1)))
+        idx = 'Prime Rate' if m.group(1).lower() == 'preferencial' else 'Index'
+        for k in terms:
+            rows.append((k, pi, win[:360], '[]', json.dumps(['%.2f%%' % x for x in pcts]), 0, None, 'agreement', None, None, None, 1, idx, min(pcts), max(pcts), 'margin'))
+    return rows
+
+
 def _apr_hits(lines):
     """{line index: set of APR terms whose label sits on that line}."""
     hits = {}
@@ -111,6 +141,7 @@ def extract(text):
     for pi, pg in enumerate(pages, 1):
         lines = pg.split('\n')
         hits = _apr_hits(lines)
+        out.extend(_spanish_margin_rows(pg, pi))
         hit_idx = sorted(hits)
         for i, l in enumerate(lines):
             if len(l) > 400: continue
