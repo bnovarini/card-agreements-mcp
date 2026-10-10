@@ -1,0 +1,35 @@
+app = "card-agreements-mcp"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  CARDS_DB = "/data/serving.db"
+  CARDS_USAGE_DB = "/data/usage.db"
+  CARDS_ALLOWED_HOSTS = "card-agreements-mcp.fly.dev"
+  CARDS_RATE_PER_MIN = "40"
+
+[mounts]
+  source = "cardsdata"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"
+  min_machines_running = 1
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 20
+    hard_limit = 40
+  [[http_service.checks]]
+    method = "GET"
+    path = "/healthz"
+    interval = "30s"
+    timeout = "10s"
+    grace_period = "30s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
