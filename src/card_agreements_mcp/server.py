@@ -196,6 +196,17 @@ def list_agreements(issuer: str, quarter: Optional[str] = None, limit: int = 50,
     return {"issuer": name, "quarter": q, **_wrap(rows, limit, offset, "agreements")}
 
 
+def _apr_fields(r: dict) -> dict:
+    """Extra fields on APR terms: card product, intro offer, variable/fixed, index and margin. Stated values, never computed."""
+    if r.get("term") not in ("purchase_apr", "balance_transfer_apr", "cash_advance_apr"):
+        return {}
+    return {"card_name": r["card_name"], "scope": r["scope"] or "agreement",
+            "has_intro_rate": None if r["has_intro"] is None else bool(r["has_intro"]), "intro_rate_pct": r["intro_rate"], "intro_period": r["intro_period"],
+            "is_variable": None if r["is_variable"] is None else bool(r["is_variable"]), "index_name": r["index_name"],
+            "margin_pct_min": r["margin_min"], "margin_pct_max": r["margin_max"],
+            "rate_basis": r["basis"]}
+
+
 def _term_rows(sha1s: list[str], terms: Optional[list[str]]) -> dict:
     if not sha1s:
         return {}
@@ -204,9 +215,9 @@ def _term_rows(sha1s: list[str], terms: Optional[list[str]]) -> dict:
     if terms:
         w += f" AND term IN ({','.join('?' * len(terms))})"; p += terms
     out: dict = {}
-    for r in run(f"SELECT t.sha1, t.term, t.page, t.snippet, t.amounts, t.pcts, t.is_none, d.ocr FROM terms t JOIN docs d ON d.sha1=t.sha1 WHERE {w.replace('sha1 IN', 't.sha1 IN').replace('AND term IN', 'AND t.term IN')} ORDER BY t.sha1, t.term, t.page", p):
+    for r in run(f"SELECT t.sha1, t.term, t.page, t.snippet, t.amounts, t.pcts, t.is_none, d.ocr, t.card_name, t.scope, t.has_intro, t.intro_rate, t.intro_period, t.is_variable, t.index_name, t.margin_min, t.margin_max, t.basis FROM terms t JOIN docs d ON d.sha1=t.sha1 WHERE {w.replace('sha1 IN', 't.sha1 IN').replace('AND term IN', 'AND t.term IN')} ORDER BY t.sha1, t.term, t.page", p):
         out.setdefault(r["sha1"], []).append({"term": r["term"], "page": r["page"], "snippet": r["snippet"], "amounts": json.loads(r["amounts"]),
-                                              "percents": json.loads(r["pcts"]), "says_none": bool(r["is_none"]), "from_ocr": bool(r["ocr"])})
+                                              "percents": json.loads(r["pcts"]), "says_none": bool(r["is_none"]), "from_ocr": bool(r["ocr"]), **_apr_fields(r)})
     return out
 
 
@@ -240,7 +251,9 @@ def _num(s: str) -> float:
                       "Filters: issuer_type (credit_union, bank, other), name_contains, min_amount/max_amount (dollar amount found in the snippet, e.g. annual_fee min_amount=95), says_none=True to keep only snippets that say None/No. "
                       "One row per issuer and agreement with the snippet and page. Pattern-matched: a snippet can list several cards' values.")
 def compare_terms(term: str, quarter: Optional[str] = None, issuer_type: Optional[str] = None, name_contains: Optional[str] = None,
-                  min_amount: Optional[float] = None, max_amount: Optional[float] = None, says_none: Optional[bool] = None, limit: int = 25, offset: int = 0) -> dict:
+                  min_amount: Optional[float] = None, max_amount: Optional[float] = None, says_none: Optional[bool] = None,
+                  has_intro_rate: Optional[bool] = None, is_variable: Optional[bool] = None, index_name_contains: Optional[str] = None, rate_basis: Optional[str] = None,
+                  card_name_contains: Optional[str] = None, limit: int = 25, offset: int = 0) -> dict:
     _check_terms([term])
     q = _q(quarter)
     limit, offset = _page(limit, offset)
@@ -251,18 +264,37 @@ def compare_terms(term: str, quarter: Optional[str] = None, issuer_type: Optiona
         w.append("UPPER(a.issuer) LIKE ?"); p.append(_like(name_contains))
     if says_none is not None:
         w.append("t.is_none = ?"); p.append(int(says_none))
-    rows = run(f"""SELECT a.issuer, i.issuer_type, a.filename, a.sha1 AS doc_id, t.page, t.snippet, t.amounts, t.pcts, t.is_none, d.ocr AS from_ocr
+    if (has_intro_rate is not None or is_variable is not None or index_name_contains or rate_basis or card_name_contains) and term not in ("purchase_apr", "balance_transfer_apr", "cash_advance_apr"):
+        raise ValueError("has_intro_rate, is_variable, index_name_contains, rate_basis and card_name_contains only apply to purchase_apr, balance_transfer_apr and cash_advance_apr")
+    if has_intro_rate is not None:
+        w.append("t.has_intro = ?"); p.append(int(has_intro_rate))
+    if is_variable is not None:
+        w.append("t.is_variable = ?"); p.append(int(is_variable))
+    if index_name_contains:
+        w.append("UPPER(t.index_name) LIKE ?"); p.append(_like(index_name_contains))
+    if rate_basis:
+        if rate_basis not in ("stated", "margin", "unknown"):
+            raise ValueError("rate_basis must be stated, margin or unknown")
+        w.append("t.basis = ?"); p.append(rate_basis)
+    if card_name_contains:
+        w.append("UPPER(t.card_name) LIKE ?"); p.append(_like(card_name_contains))
+    rows = run(f"""SELECT a.issuer, i.issuer_type, a.filename, a.sha1 AS doc_id, t.term, t.page, t.snippet, t.amounts, t.pcts, t.is_none, d.ocr AS from_ocr,
+        t.card_name, t.scope, t.has_intro, t.intro_rate, t.intro_period, t.is_variable, t.index_name, t.margin_min, t.margin_max, t.basis
         FROM agreements a JOIN issuers i ON i.issuer = a.issuer JOIN terms t ON t.sha1 = a.sha1 JOIN docs d ON d.sha1 = a.sha1 WHERE {' AND '.join(w)} ORDER BY a.issuer, a.filename, t.page""", p)
     seen, out = set(), []
     for r in rows:
         r["amounts"] = [_num(x) for x in json.loads(r["amounts"])]
         r["percents"] = json.loads(r.pop("pcts"))
         r["says_none"] = bool(r.pop("is_none")); r["from_ocr"] = bool(r["from_ocr"])
+        extra = _apr_fields(r)
+        for c in ("card_name", "scope", "has_intro", "intro_rate", "intro_period", "is_variable", "index_name", "margin_min", "margin_max", "basis", "term"):
+            r.pop(c, None)
+        r.update(extra)
         if min_amount is not None and not any(a >= min_amount for a in r["amounts"]):
             continue
         if max_amount is not None and not any(a <= max_amount for a in r["amounts"]):
             continue
-        k = (r["issuer"], r["doc_id"], r["page"])
+        k = (r["issuer"], r["doc_id"], r["page"], r.get("card_name"), r.get("snippet", "")[:60])
         if k in seen:
             continue
         seen.add(k); out.append(r)
