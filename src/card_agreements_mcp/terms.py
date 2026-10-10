@@ -26,7 +26,7 @@ PURCH_EXTRA = [re.compile(x, re.I) for x in (
     r'\(apr\)\s+for\s+\d{1,2}(\.\d+)?\s?%\s+(?:[A-Za-z\-]+\s+){0,3}purchases\b',
     r'\bannual\s+percentage\s+rates?\s*(\(apr\)\s*)?(for|on)\s+purchases?\s+(this|these|prime|\d)',
     r'\bannual\s+percentage\s+rate\s*\(apr\)\s+pu\s+\d{1,2}(\.\d+)?\s?%',
-    r'\(apr\)\s*for\s+(?:[A-Za-z0-9\u00ae\u2122&\-/\.]+\s+){1,6}purchases?\s+\d{1,2}(\.\d+)?\s?%',
+    r'\(apr\)\s*for\s+(?:[A-Za-z0-9\u00ae\u2122&\-/\.\(\)]+\s+){1,6}purchases?\s+\d{1,2}(\.\d+)?\s?%',
     r'\b(introductory\s+|variable\s+|current\s+|standard\s+)?purchase\s+apr\s+(is|will\s+be|of)\b',
     r'\bapr\s+for\s+purchases?\s+(is|may)\b',
     r'^\s*(\*\s*)?purchases?\s+\d{1,2}(\.\d+)?\s?%(\s+to\s+\d{1,2}(\.\d+)?\s?%)?\s+(introductory\s+)?apr',
@@ -37,6 +37,8 @@ PURCH_EXTRA = [re.compile(x, re.I) for x in (
     r'^\s*purchase\s+annual\b',
     r'\d\s?%\s+introductory\s+apr\s+for\s+purchases?\s+made\b',
     r'\d\s?%\s+apr\s+for\s+\d+\s+(billing\s+cycles|months)\s+on\s+purchases',
+    r'\bannual\s+percentage\s+rate\s*\(apr\)\s+for\s+\d{1,2}(\.\d+)?\s?%\s+when\s+you\s+open\s+your\s+account',
+    r'\bpurchases?\s+(variable|fixed)\s+rate\s*:\s*\d{1,2}(\.\d+)?',
 )]
 def _split_label(lines, i):
     l = lines[i]
@@ -112,6 +114,59 @@ def _spanish_margin_rows(pg, pi):
     return rows
 
 
+_MARGIN_HDR = re.compile(r'\bmargin\b.{0,160}\b(corresponding\s+)?apr\b', re.I | re.S)
+_ROW_START = re.compile(r'^\s*(purchases?|balance\s+transfers?|cash\s+advances?|penalty\s+apr)\b', re.I)
+
+
+def _margin_table_rows(lines, pi):
+    """Pricing-addendum tables: Feature / Margin / Daily Periodic Rate / Corresponding APR.
+    Both the stated 'Corresponding APR' and the 'Margin' column are stored; daily periodic rates (4+ decimals) are ignored."""
+    out = []
+    for i, l in enumerate(lines):
+        if not (re.search(r'\bmargin\b', l, re.I) and re.search(r'\b(corresponding\s+)?apr\b', ' '.join(lines[i:i + 3]), re.I)):
+            continue
+        if not re.search(r'\bfeature\b', ' '.join(lines[max(0, i - 1):i + 2]), re.I): continue
+        groups, cur = [], None
+        for j in range(i + 1, min(i + 16, len(lines))):
+            t = lines[j]
+            if not t.strip():
+                if cur: groups.append(cur); cur = None
+                if groups: break
+                continue
+            if _ROW_START.match(t):
+                if cur: groups.append(cur)
+                cur = [t]
+            elif cur is not None and not re.match(r'\s*(minimum|summary|fee\b)', t, re.I): cur.append(t)
+            elif cur is None and groups: break
+        if cur: groups.append(cur)
+        for g in groups:
+            txt = ' '.join(' '.join(g).split())
+            nums = [float(x) for x in re.findall(r'(\d{1,2}\.\d{2})\s?%', re.sub(r'\d{1,2}\.\d{4,}\s?%', ' ', txt))]
+            if len(nums) == 4:
+                # a row whose ranges wrap shows 'margin lo, APR lo' on the first physical line and 'margin hi, APR hi' on the next;
+                # a one-line row shows margin lo/hi then APR lo/hi. Either way APR - margin must agree at both ends.
+                per = [[float(x) for x in re.findall(r'(\d{1,2}\.\d{2})\s?%', re.sub(r'\d{1,2}\.\d{4,}\s?%', ' ', ln))] for ln in g]
+                per = [x for x in per if x]
+                if len(per) == 1: mg, ap = (nums[0], nums[1]), (nums[2], nums[3])
+                elif len(per) == 2 and len(per[0]) == 2 and len(per[1]) == 2: mg, ap = (per[0][0], per[1][0]), (per[0][1], per[1][1])
+                else: continue
+                if not (ap[0] > mg[0] and abs((ap[0] - mg[0]) - (ap[1] - mg[1])) < 0.021): continue
+            elif len(nums) == 2 and nums[1] > nums[0]: mg, ap = (nums[0], nums[0]), (nums[1], nums[1])
+            else: continue
+            label = txt.lower()
+            if label.startswith('penalty'): terms = ('penalty_apr',)
+            elif label.startswith('cash'): terms = ('cash_advance_apr',)
+            elif label.startswith('purchase'): terms = ('purchase_apr', 'balance_transfer_apr') if re.match(r'purchases?\s+(and|&)\s+balance', label) else ('purchase_apr',)
+            elif label.startswith('balance'): terms = ('balance_transfer_apr',)
+            else: continue
+            pcts = sorted(set(['%.2f%%' % ap[0], '%.2f%%' % ap[1]]), key=lambda x: float(x[:-1]))
+            ctx = ' '.join(' '.join(lines[max(0, i - 12):i + 1]).split()).lower()
+            for k in terms:
+                out.append((k, pi, txt[:360], '[]', json.dumps(pcts), 0, None, 'agreement', None, None, None,
+                            1 if '(v)' in label else None, 'Prime Rate' if 'prime rate' in ctx else None, mg[0], mg[1], 'stated'))
+    return out
+
+
 def _apr_hits(lines):
     """{line index: set of APR terms whose label sits on that line}."""
     hits = {}
@@ -142,6 +197,7 @@ def extract(text):
         lines = pg.split('\n')
         hits = _apr_hits(lines)
         out.extend(_spanish_margin_rows(pg, pi))
+        out.extend(_margin_table_rows(lines, pi))
         hit_idx = sorted(hits)
         for i, l in enumerate(lines):
             if len(l) > 400: continue
@@ -167,6 +223,15 @@ def extract(text):
                     out.append((k, pi, snip, json.dumps(AMT.findall(snip)[:6]), json.dumps(PCT.findall(snip)[:8]), 0,
                                 name, 'card' if name else 'agreement', f['has_intro'], f['intro_rate'], f['intro_period'], f['is_variable'],
                                 f['index_name'], f['margin_min'], f['margin_max'], f['basis']))
+    # when a margin table states the rates, drop other pattern hits for the same term whose figures match nothing in the table (stray sample rates, section numbers)
+    tab = {}
+    for r in out:
+        if r[0] in APR_TERMS and r[15] == 'stated' and r[13] is not None and r[6] is None and re.match(r'\s*(purchases?|balance|cash|penalty)', r[2], re.I) and re.search(r'\b\d{1,2}\.\d{4,}\s?%', r[2]):
+            tab.setdefault(r[0], set()).update(float(x[:-1]) for x in json.loads(r[4]))
+            tab[r[0]].update([r[13], r[14]])
+    if tab:
+        out = [r for r in out if r[0] not in tab or (r[15] == 'stated' and r[13] is not None and re.search(r'\b\d{1,2}\.\d{4,}\s?%', r[2]))
+               or any(float(x[:-1]) in tab[r[0]] for x in json.loads(r[4]))]
     cnt = {}; res = []
     seen = set()
     for r in out:
