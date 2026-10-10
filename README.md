@@ -30,6 +30,22 @@ CARDS_DB=serving.db python -m card_agreements_mcp                              #
 CARDS_DB=serving.db python -m card_agreements_mcp --http                      # HTTP on :8080
 ```
 
+## APR terms: per card, intro offers, variable rates, index and margin
+
+`purchase_apr`, `balance_transfer_apr` and `cash_advance_apr` rows carry extra fields, all read from the snippet they come with:
+
+| field | meaning |
+|---|---|
+| `card_name`, `scope` | the card product the rate is tied to when the table names one (for example `Platinum` or `Platinum Rewards`), with `scope: card`. When the agreement does not name a product for that rate, `card_name` is null and `scope` is `agreement`. |
+| `has_intro_rate`, `intro_rate_pct`, `intro_period` | an introductory or promotional rate is mentioned; the rate and period (for example 1.99% for `12 billing cycles`) when they could be parsed. `has_intro_rate` is false only when a rate is stated and no intro wording appears; null when unknown. |
+| `is_variable`, `index_name` | `true` when the text says the rate varies or is tied to an index, `false` when it says fixed or "will not vary", null when it says neither. `index_name` is `Prime Rate`, `WSJ Prime Rate`, `SOFR`, `LIBOR` or `Treasury` when the text names it. |
+| `margin_pct_min`, `margin_pct_max` | the margin over the index when the agreement states "prime plus 9.99%" or "we add 8.74% to the Prime Rate". Kept even when no absolute APR is stated. |
+| `rate_basis` | `stated` (an APR figure appears), `margin` (only index plus margin appears) or `unknown` (a label with no figure, for example a blank form). A margin-only row has no APR figure in the agreement and none is computed here. |
+
+`compare_terms` takes `has_intro_rate`, `is_variable`, `index_name_contains`, `rate_basis` and `card_name_contains` for these three terms, for questions such as "credit union cards with no intro offer" or "fixed-rate cards".
+
+Limits: card names come from headings near the rate table and are missed when a table is laid out in an unusual way; a margin range (for example 8.74% to 14.74%) covers several tiers or cards in one row; the current value of the index is not stored.
+
 ## Read this before relying on a number
 
 - Term values are pattern-matched snippets from the agreement text, with the page they came from. They are not a verified rate sheet. One snippet can hold figures for several card products or tiers; read the snippet.
