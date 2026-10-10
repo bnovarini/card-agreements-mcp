@@ -18,11 +18,14 @@ T={
 SPLIT_A = re.compile(r'^\s*(annual\s+)?percentage\s+rate\s*\(apr\)', re.I)
 SPLIT_A_PREV = re.compile(r'purchases?\s*(annual)?\s*$', re.I)
 SPLIT_B = re.compile(r'^\s*[•\-\*]?\s*annual\s+percentage\s+rate\s*\(apr\)', re.I)
-SPLIT_C = re.compile(r'^\s*(annual\s+)?percentage\s+rate\s*\(apr\)\s*(for|on)\s*$', re.I)
-SPLIT_C_NEXT = re.compile(r'^\s*purchases?\s*$', re.I)
+SPLIT_C = re.compile(r'^\s*(annual\s+)?percentage\s+rate\s*\(apr\)\s*(for|on)(\s+[A-Za-z0-9\u00ae\u2122&\-/\. ]{1,60})?\s*$', re.I)
+SPLIT_C_NEXT = re.compile(r'^\s*purchases?(\s|$)', re.I)
 SPLIT_B_NEXT = re.compile(r'^\s*for\s+purchases?\b', re.I)
 # sentence and table forms of the purchase APR (found by mining agreements without a hit)
 PURCH_EXTRA = [re.compile(x, re.I) for x in (
+    r'\bannual\s+percentage\s+rates?\s*(\(apr\)\s*)?(for|on)\s+purchases?\s+(this|these|prime|\d)',
+    r'\bannual\s+percentage\s+rate\s*\(apr\)\s+pu\s+\d{1,2}(\.\d+)?\s?%',
+    r'\(apr\)\s*for\s+(?:[A-Za-z0-9\u00ae\u2122&\-/\.]+\s+){1,6}purchases?\s+\d{1,2}(\.\d+)?\s?%',
     r'\b(introductory\s+|variable\s+|current\s+|standard\s+)?purchase\s+apr\s+(is|will\s+be|of)\b',
     r'\bapr\s+for\s+purchases?\s+(is|may)\b',
     r'^\s*(\*\s*)?purchases?\s+\d{1,2}(\.\d+)?\s?%(\s+to\s+\d{1,2}(\.\d+)?\s?%)?\s+(introductory\s+)?apr',
@@ -59,6 +62,11 @@ _APR_TPL = (
 )
 APR_EXTRA = {k: [re.compile(t.format(X=x), re.I) for t in _APR_TPL] for k, x in _X.items()}
 APR_MULTI = [
+    (re.compile(r'^\s*annual\s+percentage\s+rates?\s+(for|on)\s+purchases?\s*$', re.I), ('purchase_apr',)),
+    (re.compile(r'^\s*annual\s+percentage\s+rates?\s+(for|on)\s+balance\s+transfers?\s*$', re.I), ('balance_transfer_apr',)),
+    (re.compile(r'^\s*annual\s+percentage\s+rates?\s+(for|on)\s+cash\s+advances?\s*$', re.I), ('cash_advance_apr',)),
+    (re.compile(r'^\s*annual\s+percentage\s+rate\s*\(apr\)\s+pu\s*$', re.I), ('purchase_apr',)),
+    (re.compile(r'^\s*apr\s+for\s+(direct\s+deposit\s+and\s+check\s+cash|bank\s+cash\s+advances?)\b', re.I), ('cash_advance_apr',)),
     (re.compile(r'\bpurchases?\s*(?:/|,|and)\s*balance\s+transfers?\s+(?:apr|annual)', re.I), ('purchase_apr', 'balance_transfer_apr')),
     (re.compile(r'\bpurchases?\s+and\s+balance\s+transfers?\s+\d{1,2}(\.\d+)?\s?%', re.I), ('purchase_apr', 'balance_transfer_apr')),
     (re.compile(r'\bapr\s+for\s+purchases?\s*,\s*balance\s+transfers?', re.I), ('purchase_apr', 'balance_transfer_apr', 'cash_advance_apr')),
@@ -68,6 +76,9 @@ _SPLIT_X = {'balance_transfer_apr': re.compile(r'^\s*for\s+balance\s+transfers?\
 _BOUNDARY = re.compile(r'^\s*(paying\s+interest|how\s+to\s+avoid|minimum\s+interest|transaction\s+fees|balance\s+computation|fees\b)', re.I)
 NONE_APR = (None, 'agreement', None, None, None, None, None, None, None, None)
 EMPTY = (None, 'agreement', None, None, None, None, None, None, None, None)
+
+
+REGULAR_APR = re.compile(r'\bregular\s+apr\s+(ranges\s+from|is)\s+\d', re.I)
 
 
 def _apr_hits(lines):
@@ -82,6 +93,10 @@ def _apr_hits(lines):
                 hits.setdefault(i, set()).add(k)
         for rx, ks in APR_MULTI:
             if rx.search(l): hits.setdefault(i, set()).update(ks)
+        if REGULAR_APR.search(l):
+            win = ' '.join(lines[max(0, i - 4):i + 16])
+            if re.search(r'percentage\s+rate', win, re.I) and re.search(r'\bpurchases\b', win, re.I) and re.search(r'\bbalance\b.{0,500}\btransfers?\b', win, re.I):
+                hits.setdefault(i, set()).update(APR_TERMS)  # vertical label table: one shared value cell for all rows
         if SPLIT_B.match(l) and i + 1 < len(lines):
             for k, nx in _SPLIT_X.items():
                 if nx.match(lines[i + 1]): hits.setdefault(i, set()).add(k)
@@ -123,6 +138,12 @@ def extract(text):
     cnt = {}; res = []
     seen = set()
     for r in out:
+        if r[0] in APR_TERMS:
+            # daily periodic rates (4+ decimals, e.g. 0.04792%) are not APRs: drop them from the list, and drop rows that had only those
+            ps = json.loads(r[4]); keep = [x for x in ps if not re.search(r'\.\d{4,}', x)]
+            if ps and not keep and r[13] is None: continue
+            if not keep and r[13] is None and not re.search(r'_{3,}|X\.XX|x\.xx|\b\d{1,2}\.\d{2}\s+(to|-)\s+\d{1,2}\.\d{2}\b', r[2]): continue  # label with no figure at all: noise
+            if len(keep) != len(ps): r = r[:4] + (json.dumps(keep),) + r[5:]
         key = (r[0], r[1], r[2][:80], r[6])
         if key in seen: continue
         seen.add(key)
