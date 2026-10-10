@@ -18,6 +18,8 @@ T={
 SPLIT_A = re.compile(r'^\s*(annual\s+)?percentage\s+rate\s*\(apr\)', re.I)
 SPLIT_A_PREV = re.compile(r'purchases?\s*(annual)?\s*$', re.I)
 SPLIT_B = re.compile(r'^\s*[•\-\*]?\s*annual\s+percentage\s+rate\s*\(apr\)', re.I)
+SPLIT_C = re.compile(r'^\s*(annual\s+)?percentage\s+rate\s*\(apr\)\s*(for|on)\s*$', re.I)
+SPLIT_C_NEXT = re.compile(r'^\s*purchases?\s*$', re.I)
 SPLIT_B_NEXT = re.compile(r'^\s*for\s+purchases?\b', re.I)
 # sentence and table forms of the purchase APR (found by mining agreements without a hit)
 PURCH_EXTRA = [re.compile(x, re.I) for x in (
@@ -38,29 +40,92 @@ def _split_label(lines, i):
         return True
     if any(rx.search(l) for rx in PURCH_EXTRA):
         return True
+    if SPLIT_C.match(l) and i + 1 < len(lines) and SPLIT_C_NEXT.match(lines[i+1]):
+        return True
     if SPLIT_B.match(l) and i + 1 < len(lines) and SPLIT_B_NEXT.match(lines[i+1]):
         return True
     return False
 RX={k:re.compile(r'^[\s•\-\*\u2022\u25cf]*'+v,re.I) for k,v in T.items()}
 AMT=re.compile(r'\$\s?\d[\d,]*(?:\.\d+)?'); PCT=re.compile(r'\d{1,3}(?:\.\d+)?\s?%')
+APR_TERMS = ('purchase_apr', 'balance_transfer_apr', 'cash_advance_apr')
+_X = {'balance_transfer_apr': r'balance\s+transfers?', 'cash_advance_apr': r'cash\s+advances?'}
+_APR_TPL = (
+    r'^\s*(annual\s+percentage\s+rate\s*)?\(?apr\)?\s*(for|on)\s+{X}\b',
+    r'\b{X}\s+apr\s+(is|will\s+be|of)\b',
+    r'^\s*(\*\s*)?{X}\s+\d{{1,2}}(\.\d+)?\s?%(\s+to\s+\d{{1,2}}(\.\d+)?\s?%)?\s+(introductory\s+)?apr',
+    r'^\s*rate\s*\(apr\)\s+for\s+{X}',
+    r'^\s*(\*\s*)?{X}\s+(annual\s+percentage\s+rate|apr)\b',
+    r'^\s*\(?apr\)?\s+{X}\b',
+)
+APR_EXTRA = {k: [re.compile(t.format(X=x), re.I) for t in _APR_TPL] for k, x in _X.items()}
+APR_MULTI = [
+    (re.compile(r'\bpurchases?\s*(?:/|,|and)\s*balance\s+transfers?\s+(?:apr|annual)', re.I), ('purchase_apr', 'balance_transfer_apr')),
+    (re.compile(r'\bpurchases?\s+and\s+balance\s+transfers?\s+\d{1,2}(\.\d+)?\s?%', re.I), ('purchase_apr', 'balance_transfer_apr')),
+    (re.compile(r'\bapr\s+for\s+purchases?\s*,\s*balance\s+transfers?', re.I), ('purchase_apr', 'balance_transfer_apr', 'cash_advance_apr')),
+    (re.compile(r'\bpurchases?,\s*balance\s+transfers?\s*(,|and)\s*cash\s+advances?', re.I), ('purchase_apr', 'balance_transfer_apr', 'cash_advance_apr')),
+]
+_SPLIT_X = {'balance_transfer_apr': re.compile(r'^\s*for\s+balance\s+transfers?\b', re.I), 'cash_advance_apr': re.compile(r'^\s*for\s+cash\s+advances?\b', re.I)}
+_BOUNDARY = re.compile(r'^\s*(paying\s+interest|how\s+to\s+avoid|minimum\s+interest|transaction\s+fees|balance\s+computation|fees\b)', re.I)
+NONE_APR = (None, 'agreement', None, None, None, None, None, None, None, None)
+EMPTY = (None, 'agreement', None, None, None, None, None, None, None, None)
+
+
+def _apr_hits(lines):
+    """{line index: set of APR terms whose label sits on that line}."""
+    hits = {}
+    for i, l in enumerate(lines):
+        if len(l) > 400: continue
+        for k in APR_TERMS:
+            if RX[k].match(l) or (k == 'purchase_apr' and _split_label(lines, i)):
+                hits.setdefault(i, set()).add(k)
+            elif k in APR_EXTRA and any(rx.search(l) for rx in APR_EXTRA[k]):
+                hits.setdefault(i, set()).add(k)
+        for rx, ks in APR_MULTI:
+            if rx.search(l): hits.setdefault(i, set()).update(ks)
+        if SPLIT_B.match(l) and i + 1 < len(lines):
+            for k, nx in _SPLIT_X.items():
+                if nx.match(lines[i + 1]): hits.setdefault(i, set()).add(k)
+    return hits
+
+
 def extract(text):
-    out=[]
-    pages=text.split('\f')
-    for pi,pg in enumerate(pages,1):
-        lines=pg.split('\n')
-        for i,l in enumerate(lines):
-            if len(l)>400: continue
-            for k,rx in list(RX.items())+([('purchase_apr',None)] if _split_label(lines,i) else []):
-                if (rx is None) or rx.match(l):
-                    if k=='purchase_apr':
-                        snip=' '.join(' '.join(lines[max(i-1,0):i+14]).split())[:700]
-                    else:
-                        snip=' '.join(' '.join(lines[i:i+4]).split())[:360]
-                    if not (AMT.search(snip) or PCT.search(snip) or re.search(r'\bnone\b|\bno\b|\bnot\b|waive|days',snip,re.I)): continue
-                    out.append((k,pi,snip,json.dumps(AMT.findall(snip)[:6]),json.dumps(PCT.findall(snip)[:6]),int(bool(re.search(r'\bnone\b|\bno\s+(annual|fee|foreign)',snip[:120],re.I)))))
-    # keep up to 3 per term per doc
-    cnt={};res=[]
+    from . import apr as A
+    out = []
+    pages = text.split('\f')
+    for pi, pg in enumerate(pages, 1):
+        lines = pg.split('\n')
+        hits = _apr_hits(lines)
+        hit_idx = sorted(hits)
+        for i, l in enumerate(lines):
+            if len(l) > 400: continue
+            for k, rx in RX.items():
+                if k in APR_TERMS or not rx.match(l): continue
+                snip = ' '.join(' '.join(lines[i:i + 4]).split())[:360]
+                if not (AMT.search(snip) or PCT.search(snip) or re.search(r'\bnone\b|\bno\b|\bnot\b|waive|days', snip, re.I)): continue
+                out.append((k, pi, snip, json.dumps(AMT.findall(snip)[:6]), json.dumps(PCT.findall(snip)[:6]),
+                            int(bool(re.search(r'\bnone\b|\bno\s+(annual|fee|foreign)', snip[:120], re.I)))) + EMPTY)
+        for i in hit_idx:
+            start = i - 1 if i > 0 and 'annual percentage' in lines[i - 1].lower() and 'annual percentage' not in lines[i].lower() else i
+            end = min(i + 14, len(lines))
+            for j in hit_idx:
+                if j > i and (hits[j] != hits[i] or True) and j < end:
+                    end = j; break
+            for j in range(i + 1, end):
+                if _BOUNDARY.match(lines[j]): end = j; break
+            for k in sorted(hits[i]):
+                for name, a, b in A.split_cards(lines, start, end, i):
+                    snip = ' '.join(' '.join(lines[a:b]).split())[:700]
+                    if not (PCT.search(snip) or 'prime' in snip.lower()) or not re.search(r'[A-Za-z]{3}', snip): continue
+                    f = A.parse(snip)
+                    out.append((k, pi, snip, json.dumps(AMT.findall(snip)[:6]), json.dumps(PCT.findall(snip)[:8]), 0,
+                                name, 'card' if name else 'agreement', f['has_intro'], f['intro_rate'], f['intro_period'], f['is_variable'],
+                                f['index_name'], f['margin_min'], f['margin_max'], f['basis']))
+    cnt = {}; res = []
+    seen = set()
     for r in out:
-        cnt[r[0]]=cnt.get(r[0],0)+1
-        if cnt[r[0]]<=3: res.append(r)
+        key = (r[0], r[1], r[2][:80], r[6])
+        if key in seen: continue
+        seen.add(key)
+        cnt[r[0]] = cnt.get(r[0], 0) + 1
+        if cnt[r[0]] <= (8 if r[0] in APR_TERMS else 3): res.append(r)
     return res
