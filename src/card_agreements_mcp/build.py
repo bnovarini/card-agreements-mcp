@@ -4,6 +4,7 @@ Usage: python -m card_agreements_mcp.build /path/extract.db /path/serving.db [si
 """
 import csv, io, json, re, sqlite3, sys, zlib
 from . import terms as T
+from . import stdapr as STD
 
 def issuer_type(n: str) -> str:
     u = n.upper()
@@ -22,7 +23,7 @@ def build(src, dst, site=None):
     create table issuers(issuer text primary key, slug text, issuer_type text, state text, city text, regulator text, on_cfpb_site int, first_quarter text, last_quarter text, quarters int);
     create table agreements(quarter text, issuer text, filename text, agreement_id text, sha1 text, size int, pages int, description text, effective_date text, status text);
     create table docs(sha1 text primary key, pages int, chars int, ocr int, ztext blob);
-    create table terms(sha1 text, term text, page int, snippet text, amounts text, pcts text, is_none int, card_name text, scope text, has_intro int, intro_rate real, intro_period text, is_variable int, index_name text, margin_min real, margin_max real, basis text);
+    create table terms(sha1 text, term text, page int, snippet text, amounts text, pcts text, is_none int, card_name text, scope text, has_intro int, intro_rate real, intro_period text, is_variable int, index_name text, margin_min real, margin_max real, basis text, std_min real, std_max real);
     create table quarters(quarter text primary key, agreements int, issuers int, unique_docs int, zip_pdfs int, no_text int, metadata_rows int);
     create table meta(k text primary key, v text);
     """)
@@ -73,7 +74,12 @@ def build(src, dst, site=None):
             _, pages, chars, text = ocr[sha]; isocr = 1
         b.execute("insert into docs values(?,?,?,?,?)", (sha, pages, chars, isocr, zlib.compress((text or "").encode(), 6)))
         if chars and chars >= 50:
-            for r in T.extract(text): b.execute("insert into terms values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (sha,) + r)
+            for r in T.extract(text):
+                std = (None, None)
+                if r[0] in ("purchase_apr", "balance_transfer_apr", "cash_advance_apr") and r[6] is None and r[15] == "stated":
+                    s = STD.std_apr(r[0], r[2], r[4], r[9] if r[8] else None)
+                    if s: std = (s[0], s[1])
+                b.execute("insert into terms values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (sha,) + r + std)
         n += 1
         if n % 5000 == 0: b.commit(); print(n, flush=True)
     b.execute("create index ag_i on agreements(issuer, quarter)"); b.execute("create index ag_q on agreements(quarter)"); b.execute("create index ag_s on agreements(sha1)")
