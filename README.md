@@ -49,6 +49,8 @@ How multi-card tables are read: when card names head the columns of a rate table
 
 Spanish agreements are read when they print a plain stated line such as "Tasa Porcentual Anual (APR) para Compras 28.99%" or "16.74% a 29.74%" (intro wording and monthly rates are skipped). American Express prints its purchase rate as "APR for Pay Over Time"; that line is stored as the purchase APR with `rate_basis` = `margin` (Prime Rate plus the printed figures, never a computed APR).
 
+Label layouts where the figure sits between the label and the word Purchases are read too, for example "Annual Percentage Rate (APR) 35.99% for Purchases", American Express "APR for Prime Rate + 12.74% to Prime Rate + 21.74% Purchases" (margin only), Chase Spanish "Tasa Efectiva Anual (APR) para Compras 18.24% a 27.99%", Bank of America Spanish "Tasa Preferencial + 20.74% (APR) 27.49%", and a list of three separate figures (stored as a list, with no min or max).
+
 Limits: card names come from headings near the rate table and are missed when a table is laid out in an unusual way; a margin range (for example 8.74% to 14.74%) covers several tiers or cards in one row; the current value of the index is not stored.
 
 ## Read this before relying on a number
