@@ -205,6 +205,22 @@ def _flat_label_rows(pg, pi):
     return rows
 
 
+_BOFA_ES = re.compile(r'Tasa\s+(?:de\s+Porcentaje\s+Anual\s+\(APR\)\s+para\s+Compras|APR\s+para\s+Transferencias\s+de\s+Saldo)\b(.{0,260}?)'
+                      r'Tasa\s+Preferencial\s*\+\s*(\d{1,2}\.\d{2})\s?%\s+al\s+Tasa\s+Preferencial\s*\+\s*(\d{1,2}\.\d{2})\s?%(.{0,120}?)\(APR\)\s+del\s+(\d{1,2}\.\d{2})\s?%\s+al\s+(\d{1,2}\.\d{2})\s?%', re.I)
+
+
+def _bofa_spanish_rows(pg, pi):
+    """Spanish card pages that print 'Tasa Preferencial + a% al Tasa Preferencial + b% ... (APR) del c% al d%': stated range plus margin range."""
+    flat = ' '.join(pg.split()); rows = []
+    for m in _BOFA_ES.finditer(flat):
+        lab = flat[m.start():m.start() + 60].lower()
+        k = 'purchase_apr' if 'compras' in lab else 'balance_transfer_apr'
+        a, b, c, d = (float(m.group(i)) for i in (2, 3, 5, 6))
+        if not (c > a and abs((c - a) - (d - b)) < 0.021): continue
+        rows.append((k, pi, flat[m.start():m.end()][:360], '[]', json.dumps(['%.2f%%' % c, '%.2f%%' % d]), 0, None, 'agreement', None, None, None, 1, 'Prime Rate', a, b, 'stated'))
+    return rows
+
+
 def _apr_hits(lines):
     """{line index: set of APR terms whose label sits on that line}."""
     hits = {}
@@ -279,7 +295,7 @@ def extract(text):
                                 f['index_name'], f['margin_min'], f['margin_max'], f['basis']))
     have = {(r[0], r[1], tuple(json.loads(r[4])[:1])) for r in out if r[0] in APR_TERMS}
     for pi, pg in enumerate(pages, 1):
-        for r in _flat_label_rows(pg, pi):
+        for r in _flat_label_rows(pg, pi) + _bofa_spanish_rows(pg, pi):
             key = (r[0], r[1], tuple(json.loads(r[4])[:1]))
             if key not in have: have.add(key); out.append(r)
     # when a margin table states the rates, drop other pattern hits for the same term whose figures match nothing in the table (stray sample rates, section numbers)
