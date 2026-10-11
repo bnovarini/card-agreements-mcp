@@ -221,6 +221,36 @@ def _bofa_spanish_rows(pg, pi):
     return rows
 
 
+_ES_STATED = re.compile(r'Tasa\s+(?:de\s+Porcentaje|Porcentual)\s+Anual\s*\(APR\)\s+para\s+(Compras|Transferencias\s+de\s+Saldo|Adelantos\s+de\s+Efectivo)\s+(\d{1,2}\.\d{2})\s?%(?:\s+(?:a|hasta)\s+(\d{1,2}\.\d{2})\s?%)?', re.I)
+
+
+def _spanish_stated_rows(pg, pi):
+    """Plain Spanish stated-rate lines: 'Tasa Porcentual Anual (APR) para Compras 28.99%' or '16.74% a 29.74%'.
+    The figure must directly follow the label (so intro wording never matches) and not be followed by another bare percentage."""
+    flat = ' '.join(pg.split()); rows = []
+    for m in _ES_STATED.finditer(flat):
+        tail = flat[m.end():m.end() + 25]
+        if re.match(r'\s*(?:-|\u2013|y|o)?\s*\d{1,2}(?:\.\d+)?\s?%', tail): continue
+        lab = m.group(1).lower()
+        k = 'purchase_apr' if lab.startswith('compras') else 'balance_transfer_apr' if lab.startswith('transf') else 'cash_advance_apr'
+        pcts = [float(m.group(2))] + ([float(m.group(3))] if m.group(3) else [])
+        if min(pcts) < 3 or (len(pcts) == 2 and pcts[1] <= pcts[0]): continue
+        rows.append((k, pi, flat[m.start():m.end() + 40][:360], '[]', json.dumps(['%.2f%%' % x for x in pcts]), 0, None, 'agreement', None, None, None, None, None, None, None, 'stated'))
+    return rows
+
+
+_AMEX_POT = re.compile(r'Annual\s+Percentage\s+Rate\s*\(APR\)\s+for\s+Pay(?:\s+Over\s+Time)?\s+Prime\s+Rate\s*\+\s*(\d{1,2}\.\d{2})\s?%(?:\s+to\s+Prime\s+Rate\s*\+\s*(\d{1,2}\.\d{2})\s?%)?', re.I)
+
+
+def _amex_pay_over_time_rows(pg, pi):
+    """American Express 'APR for Pay Over Time Prime Rate + X% to Prime Rate + Y%': stored as a purchase APR, margin only (never a computed APR)."""
+    flat = ' '.join(pg.split()); rows = []
+    for m in _AMEX_POT.finditer(flat):
+        pcts = [float(m.group(1))] + ([float(m.group(2))] if m.group(2) else [])
+        rows.append(('purchase_apr', pi, flat[m.start():m.end() + 10][:360], '[]', json.dumps(['%.2f%%' % x for x in pcts]), 0, None, 'agreement', None, None, None, 1, 'Prime Rate', min(pcts), max(pcts), 'margin'))
+    return rows
+
+
 def _apr_hits(lines):
     """{line index: set of APR terms whose label sits on that line}."""
     hits = {}
@@ -295,7 +325,7 @@ def extract(text):
                                 f['index_name'], f['margin_min'], f['margin_max'], f['basis']))
     have = {(r[0], r[1], tuple(json.loads(r[4])[:1])) for r in out if r[0] in APR_TERMS}
     for pi, pg in enumerate(pages, 1):
-        for r in _flat_label_rows(pg, pi) + _bofa_spanish_rows(pg, pi):
+        for r in _flat_label_rows(pg, pi) + _bofa_spanish_rows(pg, pi) + _spanish_stated_rows(pg, pi) + _amex_pay_over_time_rows(pg, pi):
             key = (r[0], r[1], tuple(json.loads(r[4])[:1]))
             if key not in have: have.add(key); out.append(r)
     # when a margin table states the rates, drop other pattern hits for the same term whose figures match nothing in the table (stray sample rates, section numbers)
