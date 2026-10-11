@@ -211,7 +211,7 @@ def _apr_range(r: dict):
         return v[0], v[0]
     if len(v) == 2 and v[0] <= v[1]:
         a2, b2 = (re.escape(x.strip()) for x in raw)
-        if re.search(a2 + r"\s*(?:to|-|\u2013|up\s+to)\s*" + b2, r.get("snippet") or "", re.I):
+        if re.search(a2 + r"\s*(?:to|-|\u2013|up\s+to|a|hasta)\s*" + b2, r.get("snippet") or "", re.I):
             return v[0], v[1]
     return None, None
 
