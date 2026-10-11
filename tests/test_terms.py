@@ -217,3 +217,13 @@ def test_flat_layouts_skip_monthly_and_intro_only():
     assert not [x for x in T.extract("Credit Purchases: 1.075% per month Corresponding ANNUAL PERCENTAGE RATES- Cash Advance: 12.9%") if x[0] == "purchase_apr" and x[15] == "stated" and "1.075" in x[4]]
     assert not [x for x in T.extract("Cash Advances: 1.124%-1.50%; Balance Transfers: 1.124%-1.50%") if x[0].endswith("_apr")]
     assert not [x for x in T.extract("APR for Balance Transfers 0.00% introductory APR for twelve months. 14.15% After that") if x[0] == "balance_transfer_apr" and x[4] == '["0.00%"]']
+
+
+def test_bofa_spanish_margin_and_stated():
+    t = ("Tasa de Porcentaje Anual (APR) para Compras Estas tasas APR variar\u00e1n con el del Tasa Preferencial + 9.74% al Tasa Preferencial + 21.74% "
+         "(APR) del 16.49% al 28.49% mercado de acuerdo con la Tasa Preferencial (a partir del (DPR) del 0.045178% al 0.078054% 06/30/2026) "
+         "Tasa APR para Transferencias de Saldo Estas tasas APR variar\u00e1n con el del Tasa Preferencial + 9.74% al Tasa Preferencial + 21.74% mercado de acuerdo con la Tasa (APR) del 16.49% al 28.49% Preferencial")
+    rows = {x[0]: x for x in T.extract(t) if x[0].endswith("_apr")}
+    p = rows["purchase_apr"]
+    assert json.loads(p[4]) == ["16.49%", "28.49%"] and (p[13], p[14]) == (9.74, 21.74) and p[15] == "stated"
+    assert "balance_transfer_apr" in rows
