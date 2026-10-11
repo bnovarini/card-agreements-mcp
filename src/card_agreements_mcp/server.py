@@ -41,7 +41,7 @@ NOTE = (
     "or had open accounts under, as submitted. Issuers with fewer than 10,000 open card accounts are not required to submit, so small issuers are missing. "
     "These are historical agreements, not live offers. Term values (fees, APRs, grace period) are pulled from the agreement text by pattern matching: every value comes with the "
     "exact snippet and page so it can be checked, but one agreement often covers several cards, so a snippet can hold several products' figures. "
-    "The purchase, balance transfer and cash advance APR terms also carry the card product when the table names one (card_name, scope), intro offer (has_intro_rate, intro_rate_pct, intro_period), variable or fixed (is_variable, index_name), and the margin over the index (margin_pct_min/max); apr_pct_min/apr_pct_max give the stated APR as a range when the agreement prints one (X% to Y%, usually creditworthiness-dependent) or the single fixed rate (min = max), and are null when the cell lists several separate values (see percents); rate_basis says whether the agreement states an APR (stated), only index plus margin (margin), a blank form (unknown), or, for associated, a rate copied from another file of the same CFPB submission (same agreement id and quarter, for example a pricing addendum next to the agreement) when every rate-bearing file in that submission gives the same figures; the snippet names the source file. Margin-only rates are never turned into a computed APR. Spanish-language agreements are read too: figures printed as margin over the Prime Rate are stored as margin, and printed APR ranges as stated. "
+    "The purchase, balance transfer and cash advance APR terms also carry the card product when the table names one (card_name, scope), intro offer (has_intro_rate, intro_rate_pct, intro_period), variable or fixed (is_variable, index_name), and the margin over the index (margin_pct_min/max); apr_pct_min/apr_pct_max give the stated APR as a range when the agreement prints one (X% to Y%, usually creditworthiness-dependent) or the single fixed rate (min = max), and are null when the cell lists several separate values (see percents), except an introductory figure followed by a standing range (for example 0% intro, then 13.24% to 26.24%), where the standing range is returned; rate_basis says whether the agreement states an APR (stated), only index plus margin (margin), a blank form (unknown), or, for associated, a rate copied from another file of the same CFPB submission (same agreement id and quarter, for example a pricing addendum next to the agreement) when every rate-bearing file in that submission gives the same figures; the snippet names the source file. Margin-only rates are never turned into a computed APR. Spanish-language agreements are read too: figures printed as margin over the Prime Rate are stored as margin, and printed APR ranges as stated. "
     "Use get_agreement_text to read the source page. Scanned PDFs without a text layer were run through OCR (Tesseract); text and terms from them are marked from_ocr / text_from_ocr and can contain recognition errors. Scans that OCR could not read are flagged has_text=false."
 )
 
@@ -209,6 +209,12 @@ def _apr_range(r: dict):
         return None, None
     if len(v) == 1:
         return v[0], v[0]
+    ir = r.get("intro_rate")
+    if len(v) == 3 and r.get("has_intro") and ir is not None and v[0] == ir and v[1] <= v[2]:
+        # introductory figure first, then the standing range: the range is the stated APR
+        a2, b2 = (re.escape(x.strip()) for x in raw[1:])
+        if re.search(a2 + r"\s*(?:to|-|\u2013|up\s+to|a|hasta|and|y)\s*" + b2, r.get("snippet") or "", re.I):
+            return v[1], v[2]
     if len(v) == 2 and v[0] <= v[1]:
         a2, b2 = (re.escape(x.strip()) for x in raw)
         if re.search(a2 + r"\s*(?:to|-|\u2013|up\s+to|a|hasta)\s*" + b2, r.get("snippet") or "", re.I):
