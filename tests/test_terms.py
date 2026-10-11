@@ -254,3 +254,22 @@ def test_range_column_rows_keeps_range_and_skips_promo_label():
     got = {(r[6], r[4]) for r in rows if r[0] == "purchase_apr"}
     assert ("Platinum Plus", '["15.24%", "17.99%"]') in got
     assert ("Cash Rewards", '["17.24%", "17.99%"]') in got
+
+
+def test_spanish_stated_rows_plain_and_range():
+    pg = "Tasa Porcentual Anual (APR) para Compras 28.99% C\u00f3mo evitar pagar intereses\nTasa de Porcentaje Anual (APR) para Compras 16.74% a 29.74% Basado en su historial"
+    rows = T._spanish_stated_rows(pg, 1)
+    assert [json.loads(r[4]) for r in rows] == [["28.99%"], ["16.74%", "29.74%"]]
+    assert all(r[0] == 'purchase_apr' and r[15] == 'stated' for r in rows)
+
+
+def test_spanish_stated_rows_skip_intro_and_monthly():
+    assert T._spanish_stated_rows("Tasa de Porcentaje Anual (APR) para Compras 0% APR introductorio", 1) == []
+    assert T._spanish_stated_rows("Tasa Porcentual Anual (APR) para Compras 1.99%", 1) == []
+
+
+def test_amex_pay_over_time_is_margin_only():
+    pg = "Annual Percentage\n Rate (APR) for Pay          Prime Rate +  12.74%       to Prime Rate +  21.74%\n Over Time   This is a variable APR."
+    rows = T._amex_pay_over_time_rows(pg, 1)
+    assert len(rows) == 1 and rows[0][0] == 'purchase_apr' and rows[0][15] == 'margin'
+    assert rows[0][13:15] == (12.74, 21.74) and rows[0][12] == 'Prime Rate'
