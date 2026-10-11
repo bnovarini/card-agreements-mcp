@@ -167,6 +167,44 @@ def _margin_table_rows(lines, pi):
     return out
 
 
+_NUM = r'\d{1,2}(?:\.\d+)?\s?%'
+_RNG = r'(?:\s*(?:to|up\s+to|-|\u2010|\u2011|\u2012|\u2013|\u2212|WR)\s*' + _NUM + r')?(?!\s*\d{1,2}(?:\.\d+)?\s?%)(?!\s*\*?\s*(?:per\s+month|monthly|days|months|introductory|intro\b|\d+\s?mo))'
+_FLAT = [
+    # one rate shared by three products: "APR for Purchases, Balance Transfers and 20.75% Cash Advances"
+    (re.compile(r'\(APR\)\s+for\s+Purchases,\s+Balance\s+Transfers,?\s+and\s+(' + _NUM + _RNG + r')\s+Cash\s+Advances', re.I),
+     ('purchase_apr', 'balance_transfer_apr', 'cash_advance_apr')),
+    # value sits between the label and the product word: "Annual Percentage Rate (APR) for 9.40% to 17.40% , when you open your account, based on your Purchases"
+    (re.compile(r'(?:annual\s+percentage\s+rates?\s*(?:\(apr\))?|\(apr\))\s+for\s+(?:from\s+)?(' + _NUM + _RNG + r')[^%]{0,130}?(?-i:\b(?:Purchases|PURCHASES)\b)', re.I), ('purchase_apr',)),
+    (re.compile(r'\bAPR\s+for\s+Balance\s+Transfers\s+(?:from\s+)?(' + _NUM + _RNG + r')', re.I), ('balance_transfer_apr',)),
+    (re.compile(r'\bAPR\s+for\s+Cash\s+Advances\s+(?:from\s+)?(' + _NUM + _RNG + r')', re.I), ('cash_advance_apr',)),
+    (re.compile(r'\bANNUAL\s+PERCENTAGE\s+RATE\s+(' + _NUM + _RNG + r')[^%]{0,120}?\bfor\s+(?-i:Purchases|PURCHASES)\b', re.I), ('purchase_apr',)),
+    (re.compile(r'\bANNUAL\s+PERCENTAGE\s+RATE\s+(' + _NUM + _RNG + r')\s+for\s+Balance\s+Transfers', re.I), ('balance_transfer_apr',)),
+    (re.compile(r'\bANNUAL\s+PERCENTAGE\s+RATE\s+(' + _NUM + _RNG + r')\s+for\s+Cash\s+Advances', re.I), ('cash_advance_apr',)),
+]
+_INTRO_LIST = re.compile(r'\b(Credit\s+Purchases|Balance\s+Transfers|Cash\s+Advances):\s*(?:(' + _NUM + r')\s+introductory\s+APR\s+for\s+(\d+\s+\w+)\s*After\s+that,\s+your\s+APR\s+will\s+be\s*)?(' + _NUM + _RNG + r')')
+
+
+def _flat_label_rows(pg, pi):
+    """Layouts where whitespace-flattened text reads label, value, product word. Conservative: one value or one range, product word named."""
+    flat = ' '.join(pg.split())
+    rows = []
+    def mk(k, m, grp, intro=None):
+        a = max(0, m.start()); sn = flat[a:m.end() + 90][:360]
+        pcts = ['%.2f%%' % float(x) if False else x.replace(' ', '') for x in re.findall(_NUM, flat[m.start():m.end()])]
+        var = bool(re.search(r'vary\s+with\s+the\s+market', sn, re.I)) or None
+        idx = 'Prime Rate' if var and re.search(r'prime', sn, re.I) else None
+        return (k, pi, sn, '[]', json.dumps(pcts), 0, None, 'agreement', 1 if intro else None, intro[0] if intro else None, intro[1] if intro else None, var and 1, idx, None, None, 'stated')
+    for rx, ks in _FLAT:
+        for m in rx.finditer(flat):
+            for k in ks: rows.append(mk(k, m, 1))
+    for m in _INTRO_LIST.finditer(flat):
+        k = {'credit': 'purchase_apr', 'balance': 'balance_transfer_apr', 'cash': 'cash_advance_apr'}[m.group(1).lower().split()[0]]
+        intro = (float(m.group(2).rstrip('% ')), m.group(3)) if m.group(2) else None
+        if not intro and any(float(x.rstrip('% ')) < 3 for x in re.findall(_NUM, m.group(4))): continue  # monthly periodic rates, not APRs
+        rows.append(mk(k, m, 4, intro))
+    return rows
+
+
 def _apr_hits(lines):
     """{line index: set of APR terms whose label sits on that line}."""
     hits = {}
@@ -191,6 +229,7 @@ def _apr_hits(lines):
             for pj, x in enumerate(nxt):
                 mm = re.match(r'\s*(for\s+)?(purchases?|balance\s+transfers?|cash\s+advances?)(\s{3,}\S.*)?$', x, re.I)
                 if not mm: continue
+                if re.match(r'\s*(for\s+)?(purchases?|balance\s+transfers?|cash\s+advances?)\s+(not\s+(allowed|available)|n/?a\b)', x, re.I): break
                 if re.search(r'\d\s?%', l) or any(re.search(r'\d{1,2}(\.\d+)?\s?%', y) for y in nxt[:pj]):
                     w = mm.group(2).lower()
                     hits.setdefault(i, set()).add('purchase_apr' if w.startswith('purch') else 'balance_transfer_apr' if w.startswith('bal') else 'cash_advance_apr')
@@ -238,6 +277,11 @@ def extract(text):
                     out.append((k, pi, snip, json.dumps(AMT.findall(snip)[:6]), json.dumps(PCT.findall(snip)[:8]), 0,
                                 name, 'card' if name else 'agreement', f['has_intro'], f['intro_rate'], f['intro_period'], f['is_variable'],
                                 f['index_name'], f['margin_min'], f['margin_max'], f['basis']))
+    have = {(r[0], r[1], tuple(json.loads(r[4])[:1])) for r in out if r[0] in APR_TERMS}
+    for pi, pg in enumerate(pages, 1):
+        for r in _flat_label_rows(pg, pi):
+            key = (r[0], r[1], tuple(json.loads(r[4])[:1]))
+            if key not in have: have.add(key); out.append(r)
     # when a margin table states the rates, drop other pattern hits for the same term whose figures match nothing in the table (stray sample rates, section numbers)
     tab = {}
     for r in out:
