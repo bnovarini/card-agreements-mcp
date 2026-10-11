@@ -227,3 +227,30 @@ def test_bofa_spanish_margin_and_stated():
     p = rows["purchase_apr"]
     assert json.loads(p[4]) == ["16.49%", "28.49%"] and (p[13], p[14]) == (9.74, 21.74) and p[15] == "stated"
     assert "balance_transfer_apr" in rows
+
+
+def test_ordered_column_rows_per_card():
+    t = ("  INTEREST RATES\n    AND OTHER            Visa Platinum               VISA Classic\n     CHARGES\n      Annual\n"
+         "  Percentage Rate           9.9%                      13.8%\n     (APR) for\n     Purchases\n")
+    rows = T.ordered_column_rows(t)
+    got = {(r[0], r[6], r[4]) for r in rows}
+    assert ("purchase_apr", "Visa Platinum", '["9.9%"]') in got
+    assert ("purchase_apr", "VISA Classic", '["13.8%"]') in got
+
+
+def test_ordered_column_rows_nulls_doc_on_count_mismatch():
+    t = ("  Rates        Visa Platinum               VISA Classic\n"
+         "  Percentage Rate           9.9%        13.8%       15.0%\n     (APR) for\n     Purchases\n")
+    assert T.ordered_column_rows(t) == []
+
+
+def test_range_column_rows_keeps_range_and_skips_promo_label():
+    t = (" Interest Rates and                      Platinum Plus                       World Rewards                         Cash Rewards\n"
+         " Annual\n"
+         " Percentage                     15.24%         to    17.99% 16.24%                  to    17.99% 17.24%                   to     17.99%\n"
+         " Rate (APR) for                 This APR will be based on your\n"
+         " Purchases\n")
+    rows = T.range_column_rows(t)
+    got = {(r[6], r[4]) for r in rows if r[0] == "purchase_apr"}
+    assert ("Platinum Plus", '["15.24%", "17.99%"]') in got
+    assert ("Cash Rewards", '["17.24%", "17.99%"]') in got
