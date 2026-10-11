@@ -200,3 +200,20 @@ def test_value_between_label_and_product_word():
     assert json.loads(rows["purchase_apr"][4]) == ["16.25%"]
     assert json.loads(rows["balance_transfer_apr"][4]) == ["16.25%"]
     assert json.loads(rows["cash_advance_apr"][4]) == ["16.25%"]
+
+
+def test_flat_label_layouts():
+    t = "INTEREST RATES Annual Percentage Rate (APR) for Purchases, Balance Transfers and 20.75% Cash Advances This rate will vary with the market based on the Prime Rate.\n"
+    rows = [x for x in T.extract(t) if x[0].endswith("_apr")]
+    assert {x[0] for x in rows} == {"purchase_apr", "balance_transfer_apr", "cash_advance_apr"}
+    t2 = "Annual Percentage Rate (APR) for 0.00%\nPurchases, and Cash Advances\nBalance Transfer          Not Allowed\n"
+    assert "balance_transfer_apr" not in {x[0] for x in T.extract(t2)}
+    t3 = "Credit Purchases: 0.00% introductory APR for 5 months After that, your APR will be 12.75%-14.75%, based on your creditworthiness"
+    r = [x for x in T.extract(t3) if x[0] == "purchase_apr"][0]
+    assert r[9] == 0.0 and r[10] == "5 months" and "14.75%" in r[4]
+
+
+def test_flat_layouts_skip_monthly_and_intro_only():
+    assert not [x for x in T.extract("Credit Purchases: 1.075% per month Corresponding ANNUAL PERCENTAGE RATES- Cash Advance: 12.9%") if x[0] == "purchase_apr" and x[15] == "stated" and "1.075" in x[4]]
+    assert not [x for x in T.extract("Cash Advances: 1.124%-1.50%; Balance Transfers: 1.124%-1.50%") if x[0].endswith("_apr")]
+    assert not [x for x in T.extract("APR for Balance Transfers 0.00% introductory APR for twelve months. 14.15% After that") if x[0] == "balance_transfer_apr" and x[4] == '["0.00%"]']
