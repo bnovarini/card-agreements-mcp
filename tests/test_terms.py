@@ -273,3 +273,25 @@ def test_amex_pay_over_time_is_margin_only():
     rows = T._amex_pay_over_time_rows(pg, 1)
     assert len(rows) == 1 and rows[0][0] == 'purchase_apr' and rows[0][15] == 'margin'
     assert rows[0][13:15] == (12.74, 21.74) and rows[0][12] == 'Prime Rate'
+
+
+def test_layout_purchase_comenity_value_before_for_purchases():
+    pg = "Annual Percentage Rate (APR) 30.24% for Purchases This APR will vary with the market based on the Prime Rate."
+    r = T._layout_purchase_rows(pg, 1)
+    assert len(r) == 1 and json.loads(r[0][4]) == ["30.24%"] and r[0][11] == 1 and r[0][15] == 'stated'
+
+
+def test_layout_purchase_amex_cash_magnet_margin_only():
+    pg = "Annual Percentage Rate (APR) for Prime Rate + 12.74% to Prime Rate + 21.74% Purchases This is a variable APR."
+    r = T._layout_purchase_rows(pg, 1)
+    assert len(r) == 1 and r[0][15] == 'margin' and r[0][13:15] == (12.74, 21.74)
+
+
+def test_layout_purchase_chase_spanish_and_bofa_spanish_and_list():
+    a = T._layout_purchase_rows("Tasa Efectiva Anual (APR) 14.99% hasta 23.74%. Esta APR variar\u00e1 con el mercado, basado en la tasa Prime.a para Compras Las APR", 1)
+    assert json.loads(a[0][4]) == ["14.99%", "23.74%"]
+    b = T._layout_purchase_rows("Tasa de Porcentaje Anual (APR) para Compras Estas tasas APR variar\u00e1n con el Tasa Preferencial + 20.74% (APR) 27.49% mercado", 1)
+    assert json.loads(b[0][4]) == ["27.49%"] and b[0][13] == 20.74
+    c = T._layout_purchase_rows("Annual Percentage Rate (APR) for 15.99%, 17.99% or 22.99%, based on your creditworthiness. Purchases: All APRs", 1)
+    assert json.loads(c[0][4]) == ["15.99%", "17.99%", "22.99%"]
+    assert T._layout_purchase_rows("Annual Percentage Rate (APR) 0.00% for Purchases", 1) == []
