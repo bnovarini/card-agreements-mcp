@@ -41,6 +41,7 @@ NOTE = (
     "or had open accounts under, as submitted. Issuers with fewer than 10,000 open card accounts are not required to submit, so small issuers are missing. "
     "These are historical agreements, not live offers. Term values (fees, APRs, grace period) are pulled from the agreement text by pattern matching: every value comes with the "
     "exact snippet and page so it can be checked, but one agreement often covers several cards, so a snippet can hold several products' figures. "
+    "The purchase, balance transfer and cash advance APR terms also carry the card product when the table names one (card_name, scope), intro offer (has_intro_rate, intro_rate_pct, intro_period), variable or fixed (is_variable, index_name), and the margin over the index (margin_pct_min/max); apr_pct_min/apr_pct_max give the stated APR as a range when the agreement prints one (X% to Y%, usually creditworthiness-dependent) or the single fixed rate (min = max), and are null when the cell lists several separate values (see percents); rate_basis says whether the agreement states an APR (stated), only index plus margin (margin), a blank form (unknown), or, for associated, a rate copied from another file of the same CFPB submission (same agreement id and quarter, for example a pricing addendum next to the agreement) when every rate-bearing file in that submission gives the same figures; the snippet names the source file. Margin-only rates are never turned into a computed APR. Spanish-language agreements are read too: figures printed as margin over the Prime Rate are stored as margin, and printed APR ranges as stated. "
     "Use get_agreement_text to read the source page. Scanned PDFs without a text layer were run through OCR (Tesseract); text and terms from them are marked from_ocr / text_from_ocr and can contain recognition errors. Scans that OCR could not read are flagged has_text=false."
 )
 
@@ -196,11 +197,31 @@ def list_agreements(issuer: str, quarter: Optional[str] = None, limit: int = 50,
     return {"issuer": name, "quarter": q, **_wrap(rows, limit, offset, "agreements")}
 
 
+def _apr_range(r: dict):
+    """(min, max) of the stated APR when it is unambiguous: one value (fixed, min = max) or exactly two values
+    joined by 'to' / '-' in the snippet (a range). Anything else is (None, None); percents keeps the full list."""
+    try:
+        raw = json.loads(r["pcts"]) if "pcts" in r else list(r.get("percents") or [])
+        v = [float(x.rstrip("%").strip()) for x in raw]
+    except Exception:
+        return None, None
+    if r.get("basis") not in ("stated", "associated") or r.get("is_none") or r.get("says_none"):
+        return None, None
+    if len(v) == 1:
+        return v[0], v[0]
+    if len(v) == 2 and v[0] <= v[1]:
+        a2, b2 = (re.escape(x.strip()) for x in raw)
+        if re.search(a2 + r"\s*(?:to|-|\u2013|up\s+to)\s*" + b2, r.get("snippet") or "", re.I):
+            return v[0], v[1]
+    return None, None
+
+
 def _apr_fields(r: dict) -> dict:
     """Extra fields on APR terms: card product, intro offer, variable/fixed, index and margin. Stated values, never computed."""
     if r.get("term") not in ("purchase_apr", "balance_transfer_apr", "cash_advance_apr"):
         return {}
-    return {"card_name": r["card_name"], "scope": r["scope"] or "agreement",
+    lo, hi = _apr_range(r)
+    return {"apr_pct_min": lo, "apr_pct_max": hi, "card_name": r["card_name"], "scope": r["scope"] or "agreement",
             "has_intro_rate": None if r["has_intro"] is None else bool(r["has_intro"]), "intro_rate_pct": r["intro_rate"], "intro_period": r["intro_period"],
             "is_variable": None if r["is_variable"] is None else bool(r["is_variable"]), "index_name": r["index_name"],
             "margin_pct_min": r["margin_min"], "margin_pct_max": r["margin_max"],
@@ -273,8 +294,8 @@ def compare_terms(term: str, quarter: Optional[str] = None, issuer_type: Optiona
     if index_name_contains:
         w.append("UPPER(t.index_name) LIKE ?"); p.append(_like(index_name_contains))
     if rate_basis:
-        if rate_basis not in ("stated", "margin", "unknown"):
-            raise ValueError("rate_basis must be stated, margin or unknown")
+        if rate_basis not in ("stated", "margin", "unknown", "associated"):
+            raise ValueError("rate_basis must be stated, margin, unknown or associated")
         w.append("t.basis = ?"); p.append(rate_basis)
     if card_name_contains:
         w.append("UPPER(t.card_name) LIKE ?"); p.append(_like(card_name_contains))
