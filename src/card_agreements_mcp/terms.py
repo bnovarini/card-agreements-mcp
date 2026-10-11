@@ -76,7 +76,7 @@ APR_MULTI = [
     (re.compile(r'\bpurchases?,\s*balance\s+transfers?\s*(,|and)\s*cash\s+advances?', re.I), ('purchase_apr', 'balance_transfer_apr', 'cash_advance_apr')),
 ]
 _SPLIT_X = {'balance_transfer_apr': re.compile(r'^\s*for\s+balance\s+transfers?\b', re.I), 'cash_advance_apr': re.compile(r'^\s*for\s+cash\s+advances?\b', re.I)}
-_BOUNDARY = re.compile(r'^\s*(paying\s+interest|how\s+to\s+avoid|minimum\s+interest|transaction\s+fees|balance\s+computation|fees\b)', re.I)
+_BOUNDARY = re.compile(r'^\s*(penalty\s+apr|paying\s+interest|how\s+to\s+avoid|minimum\s+interest|transaction\s+fees|balance\s+computation|fees\b)', re.I)
 NONE_APR = (None, 'agreement', None, None, None, None, None, None, None, None)
 EMPTY = (None, 'agreement', None, None, None, None, None, None, None, None)
 
@@ -183,6 +183,21 @@ def _apr_hits(lines):
             win = ' '.join(lines[max(0, i - 4):i + 16])
             if re.search(r'percentage\s+rate', win, re.I) and re.search(r'\bpurchases\b', win, re.I) and re.search(r'\bbalance\b.{0,500}\btransfers?\b', win, re.I):
                 hits.setdefault(i, set()).update(APR_TERMS)  # vertical label table: one shared value cell for all rows
+        # 'Annual Percentage Rate (APR) for' / 'APR for' / '<value>' / 'Purchases': the value cell sits between the label and the product word
+        lab = re.search(r'(^|\s)((annual\s+)?percentage\s+rate\s*\(apr\)|apr)\s*for\s*(\d{1,2}(\.\d+)?\s?%.*)?$', l, re.I) or \
+            (re.search(r'annual\s+percentage\s*$', l, re.I) and i + 1 < len(lines) and re.match(r'\s*rate\s*\(apr\)\s*for\s*$', lines[i + 1], re.I))
+        if lab and len(l) < 120:
+            nxt = lines[i + 1:i + 7]
+            for pj, x in enumerate(nxt):
+                mm = re.match(r'\s*(for\s+)?(purchases?|balance\s+transfers?|cash\s+advances?)(\s{3,}\S.*)?$', x, re.I)
+                if not mm: continue
+                if re.search(r'\d\s?%', l) or any(re.search(r'\d{1,2}(\.\d+)?\s?%', y) for y in nxt[:pj]):
+                    w = mm.group(2).lower()
+                    hits.setdefault(i, set()).add('purchase_apr' if w.startswith('purch') else 'balance_transfer_apr' if w.startswith('bal') else 'cash_advance_apr')
+                break
+        wl = re.match(r'\s*apr\s+for\s+(balance|cash)\s+(\d{1,2}(\.\d+)?\s?%.*)$', l, re.I)  # 'APR for Balance   13.25% ...' / 'Transfers'
+        if wl and i + 1 < len(lines) and re.match(r'\s*(transfers?|advances?)\b', lines[i + 1], re.I):
+            hits.setdefault(i, set()).add('balance_transfer_apr' if wl.group(1).lower() == 'balance' else 'cash_advance_apr')
         if SPLIT_B.match(l) and i + 1 < len(lines):
             for k, nx in _SPLIT_X.items():
                 if nx.match(lines[i + 1]): hits.setdefault(i, set()).add(k)
