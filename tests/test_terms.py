@@ -295,3 +295,45 @@ def test_layout_purchase_chase_spanish_and_bofa_spanish_and_list():
     c = T._layout_purchase_rows("Annual Percentage Rate (APR) for 15.99%, 17.99% or 22.99%, based on your creditworthiness. Purchases: All APRs", 1)
     assert json.loads(c[0][4]) == ["15.99%", "17.99%", "22.99%"]
     assert T._layout_purchase_rows("Annual Percentage Rate (APR) 0.00% for Purchases", 1) == []
+
+
+def _std(term, snip, ir=None):
+    from card_agreements_mcp import stdapr
+    return stdapr.std_apr(term, snip, None, ir)
+
+
+def test_std_apr_drops_penalty_and_other_terms():
+    s = "APR for Cash Advances 27.24% This APR will vary with the market based on the Prime Rate. Penalty APR and When it 29.99%1 Applies This APR may be applied"
+    assert _std("cash_advance_apr", s)[:2] == (27.24, 27.24)
+    s = "Cash Advance APR 29.99%. This APR will vary with the market based on the Prime Rate.b Penalty APR and When It Up to 29.99%. This APR will vary"
+    assert _std("cash_advance_apr", s)[:2] == (29.99, 29.99)
+
+
+def test_std_apr_intro_then_standing_and_standing_then_intro():
+    s = "APR for Balance Transfers 2.99% Introductory APR for a period of six billing cycles. After that, Your APR will be 15.90% . This APR will vary"
+    assert _std("balance_transfer_apr", s, 2.99)[:2] == (15.9, 15.9)
+    s = "Annual Percentage Rate (APR) for Purchases 16.49% after the introductory period. This APR will vary. 0.00% Introductory rate for (6) statement cycles"
+    assert _std("purchase_apr", s, 0.0)[:2] == (16.49, 16.49)
+
+
+def test_std_apr_margin_only_cap_fee_garble_and_other_product_abstain():
+    assert _std("purchase_apr", "Purchase transactions, we add a Margin of 14.24% to the Prime Rate of 8.50%. The monthly periodic rate is 1.90%.") is None
+    assert _std("balance_transfer_apr", "We add 10.99% to the Prime Rate to determine the APR for Balance Transfers. The Account will never have an APR over 21%.") is None
+    assert _std("cash_advance_apr", "APR for Cash Advances 2% above your APR for Purchases, not to exceed 17.90%.") is None
+    assert _std("purchase_apr", "The Purchase APR is F188.90% which is a monthly periodic rate of F19 0.7417%.") is None
+    assert _std("cash_advance_apr", "APR for Cash Advances 29.99% This APR will vary. APR for Citi Flex Plan 20.99% to 29.99%, based on your creditworthiness.") is None
+    assert _std("purchase_apr", "Purchases 11.65% for Account Type 1, or 19.65% for Account Type 2") is None
+
+
+def test_std_apr_ranges_and_wells_fargo_layout():
+    assert _std("purchase_apr", "APR for purchases 14.99% - 22.99% Margin added to the Prime Rate to determine your APR for Cash Advances 21.49%")[:2] == (14.99, 22.99)
+    assert _std("cash_advance_apr", "APR for Cash Advances 0% up to 29.99% Some APRs may vary. Penalty APR and When Up to 29.99% based on your creditworthiness.")[:2] == (0.0, 29.99)
+
+
+def test_apr_range_std_precedence_and_intro_only_figure():
+    from card_agreements_mcp import server as S
+    base = {"pcts": json.dumps(["2.99%", "15.90%"]), "basis": "stated", "is_none": 0, "snippet": "x", "has_intro": 1, "intro_rate": 2.99}
+    assert S._apr_range({**base, "std_min": 15.9, "std_max": 15.9}) == (15.9, 15.9)
+    one = {"pcts": json.dumps(["1.90%"]), "basis": "stated", "is_none": 0, "snippet": "x", "has_intro": 1, "intro_rate": 1.9}
+    assert S._apr_range(one) == (None, None)
+    assert S._apr_range({**one, "has_intro": 0}) == (1.9, 1.9)
