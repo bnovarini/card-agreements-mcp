@@ -188,3 +188,15 @@ def test_margin_table_pnc_layout():
     assert json.loads(p[4]) == ["19.24%", "30.24%"] and (p[13], p[14]) == (10.74, 21.74) and p[15] == "stated"
     assert "balance_transfer_apr" in rows
     assert json.loads(rows["cash_advance_apr"][4]) == ["30.24%"] and rows["cash_advance_apr"][13] == 21.74
+
+
+def test_value_between_label_and_product_word():
+    t = ("Interest Rates and Interest Charges\nAnnual Percentage\nRate (APR) for\n                            16.25%\n"
+         "                            This APR will vary with the market based on the Prime Rate1.\nPurchases\n"
+         "APR for                     16.25%\nBalance Transfers           This APR will vary with the market.\n"
+         "APR for                     16.25%\nCash Advances               This APR will vary with the market.\n"
+         "Penalty APR and             18.0%\nWhen it Applies             This APR may be applied.\n")
+    rows = {x[0]: x for x in T.extract(t)}
+    assert json.loads(rows["purchase_apr"][4]) == ["16.25%"]
+    assert json.loads(rows["balance_transfer_apr"][4]) == ["16.25%"]
+    assert json.loads(rows["cash_advance_apr"][4]) == ["16.25%"]
