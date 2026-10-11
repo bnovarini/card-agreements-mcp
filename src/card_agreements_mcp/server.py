@@ -41,7 +41,7 @@ NOTE = (
     "or had open accounts under, as submitted. Issuers with fewer than 10,000 open card accounts are not required to submit, so small issuers are missing. "
     "These are historical agreements, not live offers. Term values (fees, APRs, grace period) are pulled from the agreement text by pattern matching: every value comes with the "
     "exact snippet and page so it can be checked, but one agreement often covers several cards, so a snippet can hold several products' figures. "
-    "The purchase, balance transfer and cash advance APR terms also carry the card product when the table names one (card_name, scope), intro offer (has_intro_rate, intro_rate_pct, intro_period), variable or fixed (is_variable, index_name), and the margin over the index (margin_pct_min/max); apr_pct_min/apr_pct_max give the stated APR as a range when the agreement prints one (X% to Y%, usually creditworthiness-dependent) or the single fixed rate (min = max), and are null when the cell lists several separate values (see percents), except an introductory figure followed by a standing range (for example 0% intro, then 13.24% to 26.24%), where the standing range is returned; rate_basis says whether the agreement states an APR (stated), only index plus margin (margin), a blank form (unknown), or, for associated, a rate copied from another file of the same CFPB submission (same agreement id and quarter, for example a pricing addendum next to the agreement) when every rate-bearing file in that submission gives the same figures; the snippet names the source file. Margin-only rates are never turned into a computed APR. Spanish-language agreements are read too: figures printed as margin over the Prime Rate are stored as margin, and printed APR ranges as stated. "
+    "The purchase, balance transfer and cash advance APR terms also carry the card product when the table names one (card_name, scope), intro offer (has_intro_rate, intro_rate_pct, intro_period), variable or fixed (is_variable, index_name), and the margin over the index (margin_pct_min/max); apr_pct_min/apr_pct_max give the stated APR as a range when the agreement prints one (X% to Y%, usually creditworthiness-dependent) or the single fixed rate (min = max), including when the snippet also carries a penalty APR, an introductory rate, a margin, a periodic rate or another term's figures and the standing figure for this term is unambiguous, and are null when the cell lists several separate values (see percents), except an introductory figure followed by a standing range (for example 0% intro, then 13.24% to 26.24%), where the standing range is returned; rate_basis says whether the agreement states an APR (stated), only index plus margin (margin), a blank form (unknown), or, for associated, a rate copied from another file of the same CFPB submission (same agreement id and quarter, for example a pricing addendum next to the agreement) when every rate-bearing file in that submission gives the same figures; the snippet names the source file. Margin-only rates are never turned into a computed APR. Spanish-language agreements are read too: figures printed as margin over the Prime Rate are stored as margin, and printed APR ranges as stated. "
     "Use get_agreement_text to read the source page. Scanned PDFs without a text layer were run through OCR (Tesseract); text and terms from them are marked from_ocr / text_from_ocr and can contain recognition errors. Scans that OCR could not read are flagged has_text=false."
 )
 
@@ -200,6 +200,8 @@ def list_agreements(issuer: str, quarter: Optional[str] = None, limit: int = 50,
 def _apr_range(r: dict):
     """(min, max) of the stated APR when it is unambiguous: one value (fixed, min = max) or exactly two values
     joined by 'to' / '-' in the snippet (a range). Anything else is (None, None); percents keeps the full list."""
+    if r.get("std_min") is not None:
+        return r["std_min"], r["std_max"]
     try:
         raw = json.loads(r["pcts"]) if "pcts" in r else list(r.get("percents") or [])
         v = [float(x.rstrip("%").strip()) for x in raw]
@@ -207,9 +209,11 @@ def _apr_range(r: dict):
         return None, None
     if r.get("basis") not in ("stated", "associated") or r.get("is_none") or r.get("says_none"):
         return None, None
+    ir = r.get("intro_rate")
+    if len(v) == 1 and r.get("has_intro") and ir is not None and v[0] == ir:
+        return None, None   # the only figure is the introductory rate, so no standing APR is stated here
     if len(v) == 1:
         return v[0], v[0]
-    ir = r.get("intro_rate")
     if len(v) == 3 and r.get("has_intro") and ir is not None and v[0] == ir and v[1] <= v[2]:
         # introductory figure first, then the standing range: the range is the stated APR
         a2, b2 = (re.escape(x.strip()) for x in raw[1:])
@@ -242,7 +246,7 @@ def _term_rows(sha1s: list[str], terms: Optional[list[str]]) -> dict:
     if terms:
         w += f" AND term IN ({','.join('?' * len(terms))})"; p += terms
     out: dict = {}
-    for r in run(f"SELECT t.sha1, t.term, t.page, t.snippet, t.amounts, t.pcts, t.is_none, d.ocr, t.card_name, t.scope, t.has_intro, t.intro_rate, t.intro_period, t.is_variable, t.index_name, t.margin_min, t.margin_max, t.basis FROM terms t JOIN docs d ON d.sha1=t.sha1 WHERE {w.replace('sha1 IN', 't.sha1 IN').replace('AND term IN', 'AND t.term IN')} ORDER BY t.sha1, t.term, t.page", p):
+    for r in run(f"SELECT t.sha1, t.term, t.page, t.snippet, t.amounts, t.pcts, t.is_none, d.ocr, t.card_name, t.scope, t.has_intro, t.intro_rate, t.intro_period, t.is_variable, t.index_name, t.margin_min, t.margin_max, t.basis, t.std_min, t.std_max FROM terms t JOIN docs d ON d.sha1=t.sha1 WHERE {w.replace('sha1 IN', 't.sha1 IN').replace('AND term IN', 'AND t.term IN')} ORDER BY t.sha1, t.term, t.page", p):
         out.setdefault(r["sha1"], []).append({"term": r["term"], "page": r["page"], "snippet": r["snippet"], "amounts": json.loads(r["amounts"]),
                                               "percents": json.loads(r["pcts"]), "says_none": bool(r["is_none"]), "from_ocr": bool(r["ocr"]), **_apr_fields(r)})
     return out
@@ -306,7 +310,7 @@ def compare_terms(term: str, quarter: Optional[str] = None, issuer_type: Optiona
     if card_name_contains:
         w.append("UPPER(t.card_name) LIKE ?"); p.append(_like(card_name_contains))
     rows = run(f"""SELECT a.issuer, i.issuer_type, a.filename, a.sha1 AS doc_id, t.term, t.page, t.snippet, t.amounts, t.pcts, t.is_none, d.ocr AS from_ocr,
-        t.card_name, t.scope, t.has_intro, t.intro_rate, t.intro_period, t.is_variable, t.index_name, t.margin_min, t.margin_max, t.basis
+        t.card_name, t.scope, t.has_intro, t.intro_rate, t.intro_period, t.is_variable, t.index_name, t.margin_min, t.margin_max, t.basis, t.std_min, t.std_max
         FROM agreements a JOIN issuers i ON i.issuer = a.issuer JOIN terms t ON t.sha1 = a.sha1 JOIN docs d ON d.sha1 = a.sha1 WHERE {' AND '.join(w)} ORDER BY a.issuer, a.filename, t.page""", p)
     seen, out = set(), []
     for r in rows:
@@ -314,7 +318,7 @@ def compare_terms(term: str, quarter: Optional[str] = None, issuer_type: Optiona
         r["percents"] = json.loads(r.pop("pcts"))
         r["says_none"] = bool(r.pop("is_none")); r["from_ocr"] = bool(r["from_ocr"])
         extra = _apr_fields(r)
-        for c in ("card_name", "scope", "has_intro", "intro_rate", "intro_period", "is_variable", "index_name", "margin_min", "margin_max", "basis", "term"):
+        for c in ("card_name", "scope", "has_intro", "intro_rate", "intro_period", "is_variable", "index_name", "margin_min", "margin_max", "basis", "term", "std_min", "std_max"):
             r.pop(c, None)
         r.update(extra)
         if min_amount is not None and not any(a >= min_amount for a in r["amounts"]):
