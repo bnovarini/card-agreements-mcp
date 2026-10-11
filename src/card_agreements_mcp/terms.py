@@ -322,3 +322,157 @@ def extract(text):
         cnt[r[0]] = cnt.get(r[0], 0) + 1
         if cnt[r[0]] <= (8 if r[0] in APR_TERMS else 3): res.append(r)
     return res
+
+
+# --- ordered-column assignment for multi-card rate tables -------------------
+_OC_PCT = re.compile(r"\d{1,2}(?:\.\d{1,3})?\s?%")
+_OC_CARDKW = re.compile(r"\b(visa|mastercard|master\s?card|platinum|classic|gold|rewards|secured|signature|premier|preferred|standard|card|cash\s?back|select|student|business|advantage|world)\b", re.I)
+_OC_TERMS = (("purchase_apr", re.compile(r"purchase", re.I)),
+             ("balance_transfer_apr", re.compile(r"balance\s+transfer", re.I)),
+             ("cash_advance_apr", re.compile(r"cash\s+advance", re.I)))
+
+
+def _oc_header(line):
+    """Card-name header: no digits/%/$, 2-6 segments separated by 3+ spaces, each with a card keyword."""
+    s = line.strip()
+    if not s or re.search(r"[\d%$]", s):
+        return None
+    segs = [x.strip() for x in re.split(r"\s{3,}", line.strip())]
+    # the leftmost segment may be a row-label column; keep only segments with card keywords
+    names = [x for x in segs if _OC_CARDKW.search(x) and 2 <= len(x) <= 40]
+    if len(names) < 2 or len(names) > 6 or len({n.lower() for n in names}) != len(names):
+        return None
+    return names
+
+
+def ordered_column_rows(text):
+    """Per-card APR rows from tables whose columns are cards (header names, then one row per APR type with
+    one value per card, same order). Returns [] for the whole document when any APR value row does not fit:
+    wrong count, unreadable right side, no header, or an ambiguous label."""
+    out = []
+    for pno, page in enumerate(text.split("\f"), 1):
+        lines = page.split("\n")
+        header = None; hidx = -1
+        for i, ln in enumerate(lines):
+            h = _oc_header(ln)
+            if h:
+                header, hidx = h, i; continue
+            ps = list(_OC_PCT.finditer(ln))
+            if not ps:
+                continue
+            left = ln[:ps[0].start()]
+            if not left.strip() or not re.search(r"\s{3,}$", left):
+                continue  # prose or a value-only line, not a table row
+            if len(left) > 45 or (len(ps) == 1 and header is None):
+                continue
+            nxt = []
+            for j in range(i + 1, min(i + 3, len(lines))):
+                if not lines[j].strip() or _OC_PCT.search(lines[j]):
+                    break
+                nxt.append(lines[j][:45])
+            label = left + " " + " ".join(nxt)
+            hits = [t for t, rx in _OC_TERMS if rx.search(label)]
+            if not hits and i > 0 and lines[i - 1].strip() and not _OC_PCT.search(lines[i - 1]):
+                label = lines[i - 1][:45] + " " + left
+                hits = [t for t, rx in _OC_TERMS if rx.search(label)]
+            if len(hits) != 1 or not re.search(r"apr|percentage|rate|purchase|transfer|advance", label, re.I):
+                continue
+            if "$" in ln or re.search(r"\bof\b", ln[ps[0].start():], re.I) and len(ps) == 1:
+                continue
+            if len(ps) < 2:
+                continue  # single value: not a multi-card row
+            right = ln[ps[0].start():]
+            if re.search(r"[A-Za-z$]", _OC_PCT.sub("", right)):
+                return []  # APR row with words/ranges beside the values
+            if header is None or hidx < 0 or i - hidx > 14 or len(ps) != len(header):
+                return []  # no header, stale header or wrong count: null the whole doc
+            snip = (" ".join(lines[hidx].split()) + " | " + " ".join(ln.split()))[:400]
+            for k, m in enumerate(ps):
+                out.append((hits[0], pno, snip, "[]", '["%s"]' % m.group(0).replace(" ", ""), 0, header[k], "card",
+                            0, None, None, None, None, None, None, "stated"))
+    return out
+
+
+# --- range-aware column assignment ------------------------------------------
+_RG_CELL = re.compile(r"(\d{1,2}(?:\.\d{1,3})?)\s?%\s*(?:(?:to|-|\u2013|up\s+to)\s*(\d{1,2}(?:\.\d{1,3})?)\s?%)?", re.I)
+_RG_INTRO = re.compile(r"introductory", re.I)
+_RG_PERIOD = re.compile(r"(?:for|through)\s+(?:the\s+first\s+)?(\w+(?:\s*\(\d+\))?\s+(?:months?|days?|billing\s+cycles?|statement\s+cycles?))", re.I)
+
+
+def _rg_header(line):
+    names = _oc_header(line)
+    if not names:
+        return None
+    pos = []
+    for n in names:
+        k = line.find(n)
+        if k < 0:
+            return None
+        pos.append(k)
+    return names, pos
+
+
+def range_column_rows(text):
+    """Per-card APR rows where each card's cell is one value or a 'X% to Y%' range, aligned by character
+    position under the card header. Fills pct_min/pct_max in `pcts` as [min,max]; for fixed rates min=max.
+    'Introductory APR' cells go to intro_rate/intro_period. Returns [] for the whole doc when an APR row with
+    a term label has the wrong cell count or a cell outside its header column."""
+    out = []
+    for pno, page in enumerate(text.split("\f"), 1):
+        lines = page.split("\n")
+        hdr = None; hidx = -1
+        for i, ln in enumerate(lines):
+            h = _rg_header(ln)
+            if h:
+                hdr, hidx = h, i; continue
+            if hdr is None:
+                continue
+            cells = list(_RG_CELL.finditer(ln))
+            if not cells:
+                continue
+            first = cells[0].start()
+            left = ln[:first]
+            if not left.strip() or not re.search(r"\s{3,}$", left) or len(left) > 45:
+                continue
+            nxt = []
+            for j in range(i + 1, min(i + 3, len(lines))):
+                if not lines[j].strip() or _RG_CELL.search(lines[j][:46]):
+                    break
+                nxt.append(lines[j][:first])
+            label = left + " " + " ".join(nxt)
+            hits = [t for t, rx in _OC_TERMS if rx.search(label)]
+            if len(hits) != 1 or not re.search(r"apr|percentage|rate", label, re.I):
+                continue
+            names, pos = hdr
+            if i - hidx > 14:
+                return []
+            rest = _RG_CELL.sub("", ln[first:])
+            intro = bool(_RG_INTRO.search(rest))
+            if re.search(r"[A-Za-z$]", rest) and not intro:
+                return []
+            if len(cells) != len(names):
+                return []
+            cen = [p + len(n) / 2 for p, n in zip(pos, names)]
+            bounds = [-1] + [(cen[q] + cen[q + 1]) / 2 for q in range(len(cen) - 1)] + [10 ** 6]
+            for k, m in enumerate(cells):
+                mid = (m.start() + m.end()) / 2
+                if not (bounds[k] <= mid < bounds[k + 1]):
+                    return []
+            term = hits[0]
+            for k, m in enumerate(cells):
+                lo, hi = m.group(1), m.group(2) or m.group(1)
+                a, b = float(lo), float(hi)
+                if a > b:
+                    return []
+                snip = (" ".join(lines[hidx].split()) + " | " + " ".join(ln.split()))[:400]
+                if intro:
+                    per = None
+                    blob = " ".join(" ".join(lines[j][max(int(bounds[k]), 0):int(min(bounds[k + 1], 10 ** 5))].split()) for j in range(i, min(i + 4, len(lines))))
+                    mp = _RG_PERIOD.search(blob)
+                    if mp:
+                        per = mp.group(1)
+                    out.append((term, pno, snip, "[]", "[]", 0, names[k], "card", 1, a if b == a else None, per, None, None, None, None, "stated"))
+                else:
+                    pc = ['%s%%' % lo] if lo == hi else ['%s%%' % lo, '%s%%' % hi]
+                    out.append((term, pno, snip, "[]", json.dumps(pc), 0, names[k], "card", 0, None, None, None, None, None, None, "stated"))
+    return out
