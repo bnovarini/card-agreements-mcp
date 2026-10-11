@@ -221,7 +221,7 @@ def _bofa_spanish_rows(pg, pi):
     return rows
 
 
-_ES_STATED = re.compile(r'Tasa\s+(?:de\s+Porcentaje|Porcentual)\s+Anual\s*\(APR\)\s+para\s+(Compras|Transferencias\s+de\s+Saldo|Adelantos\s+de\s+Efectivo)\s+(\d{1,2}\.\d{2})\s?%(?:\s+(?:a|hasta)\s+(\d{1,2}\.\d{2})\s?%)?', re.I)
+_ES_STATED = re.compile(r'Tasa\s+(?:de\s+Porcentaje|Porcentual|Efectiva)\s+Anual\s*\(APR\)\s+para\s+(Compras|Transferencias\s+de\s+Saldo|Adelantos\s+de\s+Efectivo)\s+(\d{1,2}\.\d{2})\s?%(?:\s+(?:a|hasta)\s+(\d{1,2}\.\d{2})\s?%)?', re.I)
 
 
 def _spanish_stated_rows(pg, pi):
@@ -248,6 +248,42 @@ def _amex_pay_over_time_rows(pg, pi):
     for m in _AMEX_POT.finditer(flat):
         pcts = [float(m.group(1))] + ([float(m.group(2))] if m.group(2) else [])
         rows.append(('purchase_apr', pi, flat[m.start():m.end() + 10][:360], '[]', json.dumps(['%.2f%%' % x for x in pcts]), 0, None, 'agreement', None, None, None, 1, 'Prime Rate', min(pcts), max(pcts), 'margin'))
+    return rows
+
+
+_PV = r'(\d{1,2}\.\d{2})\s?%'
+_FOR_PURCH = re.compile(r'Annual\s+Percentage\s+Rate\s*\(APR\)\s+' + _PV + r'(?:\s+to\s+' + _PV + r')?\s+for\s+Purchases\b', re.I)
+_AMEX_PURCH = re.compile(r'Annual\s+Percentage\s+Rate\s*\(APR\)\s+for\s+Prime\s+Rate\s*\+\s*' + _PV + r'(?:\s+to\s+Prime\s+Rate\s*\+\s*' + _PV + r')?\s+Purchases\b', re.I)
+_CHASE_ES = re.compile(r'Tasa\s+Efectiva\s+Anual\s*\(APR\)\s+' + _PV + r'\s+(?:hasta|a)\s+' + _PV + r'\.(?:(?!\(APR\)|APR\s+para).){0,110}?\bpara\s+Compras\b', re.I)
+_BOFA_ES2 = re.compile(r'Tasa\s+de\s+Porcentaje\s+Anual\s*\(APR\)\s+para\s+Compras(?:(?!Transferencias|Adelantos).){0,90}?Tasa\s+Preferencial\s*\+\s*' + _PV + r'\s*\(APR\)\s*' + _PV, re.I)
+_LIST3 = re.compile(r'Annual\s+Percentage\s+Rate\s*\(APR\)\s+for\s+' + _PV + r',\s+' + _PV + r',?\s+or\s+' + _PV + r',?\s+based\s+on\s+your\s+creditworthiness\.\s+Purchases\b', re.I)
+
+
+def _layout_purchase_rows(pg, pi):
+    """Purchase APR label layouts where the figure sits between the label and the word Purchases (or after the Spanish label in a different order).
+    Every figure is printed verbatim in the snippet; margin-only rows keep index and margin and never an APR."""
+    flat = ' '.join(pg.split()); rows = []
+
+    def row(m, pcts, variable=None, idx=None, mg=None, basis='stated'):
+        rows.append(('purchase_apr', pi, flat[m.start():m.end() + 70][:360], '[]', json.dumps(['%.2f%%' % x for x in pcts]), 0, None, 'agreement',
+                     None, None, None, variable, idx, mg[0] if mg else None, mg[1] if mg else None, basis))
+    for m in _FOR_PURCH.finditer(flat):
+        pcts = [float(g) for g in m.groups() if g]
+        if min(pcts) < 3 or (len(pcts) == 2 and pcts[1] <= pcts[0]): continue
+        var = bool(re.search(r'will\s+vary\s+with\s+the\s+market', flat[m.end():m.end() + 80], re.I))
+        row(m, pcts, 1 if var else None, 'Prime Rate' if var and re.search(r'Prime\s+Rate', flat[m.end():m.end() + 140], re.I) else None)
+    for m in _AMEX_PURCH.finditer(flat):
+        pcts = [float(g) for g in m.groups() if g]
+        row(m, pcts, 1, 'Prime Rate', (min(pcts), max(pcts)), 'margin')
+    for m in _CHASE_ES.finditer(flat):
+        pcts = [float(m.group(1)), float(m.group(2))]
+        if pcts[1] > pcts[0] >= 3: row(m, pcts, 1 if re.search(r'variar', m.group(0), re.I) else None, 'Prime Rate' if re.search(r'tasa\s+Prime', m.group(0), re.I) else None)
+    for m in _BOFA_ES2.finditer(flat):
+        mg, ap = float(m.group(1)), float(m.group(2))
+        if ap > mg: row(m, [ap], 1, 'Prime Rate', (mg, mg))
+    for m in _LIST3.finditer(flat):
+        pcts = [float(g) for g in m.groups()]
+        if min(pcts) >= 3: row(m, pcts, 1 if re.search(r'Prime\s+Rate', flat[m.end():m.end() + 120], re.I) else None, 'Prime Rate' if re.search(r'Prime\s+Rate', flat[m.end():m.end() + 120], re.I) else None)
     return rows
 
 
@@ -325,7 +361,7 @@ def extract(text):
                                 f['index_name'], f['margin_min'], f['margin_max'], f['basis']))
     have = {(r[0], r[1], tuple(json.loads(r[4])[:1])) for r in out if r[0] in APR_TERMS}
     for pi, pg in enumerate(pages, 1):
-        for r in _flat_label_rows(pg, pi) + _bofa_spanish_rows(pg, pi) + _spanish_stated_rows(pg, pi) + _amex_pay_over_time_rows(pg, pi):
+        for r in _flat_label_rows(pg, pi) + _bofa_spanish_rows(pg, pi) + _spanish_stated_rows(pg, pi) + _amex_pay_over_time_rows(pg, pi) + _layout_purchase_rows(pg, pi):
             key = (r[0], r[1], tuple(json.loads(r[4])[:1]))
             if key not in have: have.add(key); out.append(r)
     # when a margin table states the rates, drop other pattern hits for the same term whose figures match nothing in the table (stray sample rates, section numbers)
