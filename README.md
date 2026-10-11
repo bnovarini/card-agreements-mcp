@@ -47,6 +47,8 @@ CARDS_DB=serving.db python -m card_agreements_mcp --http                      # 
 
 How multi-card tables are read: when card names head the columns of a rate table, each card gets its own row. Plain one-value-per-card tables are assigned by column order only when every APR row has exactly one value per card; range cells ("X% to Y%") are assigned by character position under the card header. Promotional cells ("0% introductory APR for six months") go to `intro_rate_pct` / `intro_period` and are never stored as the standing APR. If any APR row in the document does not fit (wrong count, cell outside its column, words beside the values) the whole document is left null rather than guessed.
 
+Spanish agreements are read when they print a plain stated line such as "Tasa Porcentual Anual (APR) para Compras 28.99%" or "16.74% a 29.74%" (intro wording and monthly rates are skipped). American Express prints its purchase rate as "APR for Pay Over Time"; that line is stored as the purchase APR with `rate_basis` = `margin` (Prime Rate plus the printed figures, never a computed APR).
+
 Limits: card names come from headings near the rate table and are missed when a table is laid out in an unusual way; a margin range (for example 8.74% to 14.74%) covers several tiers or cards in one row; the current value of the index is not stored.
 
 ## Read this before relying on a number
